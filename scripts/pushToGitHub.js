@@ -54,13 +54,14 @@ async function main() {
     }
     await git.addRemote({ fs, dir: repoDir, remote: 'origin', url: remoteUrl });
 
-    console.log('Pushing branch "main" to remote repository...');
+    console.log('Pushing branch "main" to remote repository (with force overwrite)...');
     const pushResult = await git.push({
       fs,
       http,
       dir: repoDir,
       remote: 'origin',
       ref: 'main',
+      force: true,
       onAuth: () => ({
         username: token, // GitHub accepts token as username or password
         password: '',
