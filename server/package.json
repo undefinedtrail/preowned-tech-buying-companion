@@ -1,0 +1,28 @@
+{
+  "name": "preowned-tech-companion-server",
+  "version": "1.0.0",
+  "description": "Backend API and AI services for Preowned Tech Buying Companion",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js",
+    "seed": "node seed.js",
+    "test:verify": "node testVerification.js"
+  },
+  "dependencies": {
+    "@langchain/community": "^0.3.0",
+    "@langchain/core": "^0.3.0",
+    "@langchain/ollama": "^0.1.0",
+    "bcryptjs": "^2.4.3",
+    "cookie-parser": "^1.4.6",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "express-rate-limit": "^7.2.0",
+    "helmet": "^7.1.0",
+    "jsonwebtoken": "^9.0.2",
+    "langchain": "^0.3.0",
+    "mongoose": "^8.3.1",
+    "zod": "^3.23.8"
+  }
+}
