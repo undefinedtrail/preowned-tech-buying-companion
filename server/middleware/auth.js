@@ -49,24 +49,29 @@ const authenticate = async (req, res, next) => {
       });
     }
 
-    // Verify server-side session in database if sessionId is present
-    if (decoded.sessionId) {
-      const activeSession = await Session.findOne({
-        _id: decoded.sessionId,
-        userId: user._id,
-        expiresAt: { $gt: new Date() },
+    // MANDATORY SERVER SESSIONS: Reject any JWT that does not contain a valid sessionId
+    if (!decoded.sessionId) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid session token: Missing mandatory server-side session identifier.',
       });
-
-      if (!activeSession) {
-        return res.status(401).json({
-          success: false,
-          message: 'Session expired or revoked by server. Please log in again.',
-        });
-      }
-
-      req.session = activeSession;
     }
 
+    // Every authenticated request must verify corresponding MongoDB Session exists, is unrevoked, and is unexpired
+    const activeSession = await Session.findOne({
+      _id: decoded.sessionId,
+      userId: user._id,
+      expiresAt: { $gt: new Date() },
+    });
+
+    if (!activeSession) {
+      return res.status(401).json({
+        success: false,
+        message: 'Session expired or revoked by server. Please log in again.',
+      });
+    }
+
+    req.session = activeSession;
     req.user = user;
     next();
   } catch (error) {
@@ -97,18 +102,14 @@ const optionalAuth = async (req, res, next) => {
       const JWT_SECRET = getJwtSecret();
       const decoded = jwt.verify(token, JWT_SECRET);
       const user = await User.findById(decoded.id);
-      if (user) {
-        if (decoded.sessionId) {
-          const activeSession = await Session.findOne({
-            _id: decoded.sessionId,
-            userId: user._id,
-            expiresAt: { $gt: new Date() },
-          });
-          if (activeSession) {
-            req.session = activeSession;
-            req.user = user;
-          }
-        } else {
+      if (user && decoded.sessionId) {
+        const activeSession = await Session.findOne({
+          _id: decoded.sessionId,
+          userId: user._id,
+          expiresAt: { $gt: new Date() },
+        });
+        if (activeSession) {
+          req.session = activeSession;
           req.user = user;
         }
       }

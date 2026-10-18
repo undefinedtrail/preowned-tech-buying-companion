@@ -83,8 +83,8 @@ const listingSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ['active', 'suspended', 'sold'],
-      default: 'active',
+      enum: ['pending', 'active', 'suspended', 'sold'],
+      default: 'pending',
       index: true,
     },
     evidenceStatus: {

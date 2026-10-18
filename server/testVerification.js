@@ -445,7 +445,8 @@ async function runAcceptanceChecks() {
 
     const reportEvent = await ModerationEvent.create({
       listingId: targetListing._id,
-      moderatorId: buyerUser._id,
+      moderatorId: null,
+      reportedBy: buyerUser._id,
       action: 'report_filed',
       reason: 'Suspicious device description reported by user',
       notes: 'Automated test report event',
@@ -455,6 +456,8 @@ async function runAcceptanceChecks() {
 
     assert(targetListing.reportCount === initialReportCount + 1, 'Listing reportCount incremented upon reporting');
     assert(reportEvent !== null && reportEvent.action === 'report_filed', 'ModerationEvent audit entry created for report');
+    assert(reportEvent.moderatorId === null, 'Community report leaves moderatorId null (reporter stored in reportedBy)');
+    assert(reportEvent.reportedBy.toString() === buyerUser._id.toString(), 'Community report correctly records reporter in reportedBy');
 
     // Rule: Moderators cannot silently rewrite seller condition declarations
     const originalDisclosures = { ...targetListing.conditionDisclosures.toObject() };
@@ -470,8 +473,19 @@ async function runAcceptanceChecks() {
     const comparisonRoute = aiRoutes.stack.find((layer) => layer.route && layer.route.path === '/comparison-agent');
     assert(comparisonRoute !== null, 'Comparison agent route is registered');
     assert(comparisonRoute.route.methods.post === true, 'Comparison agent accepts POST');
-    // The route has at least 3 middleware functions: [authenticate, limiter, handler]
     assert(comparisonRoute.route.stack.length >= 3, 'Comparison agent route is protected with authentication and rate limiting');
+
+    const buyerChatRoute = aiRoutes.stack.find((layer) => layer.route && layer.route.path === '/buyer-chat');
+    assert(buyerChatRoute !== null, 'Buyer chat RAG route is registered');
+    assert(buyerChatRoute.route.stack.length >= 3, 'Buyer chat route is protected with authentication and rate limiting');
+
+    const semanticRoute = aiRoutes.stack.find((layer) => layer.route && layer.route.path === '/semantic-search');
+    assert(semanticRoute !== null, 'Semantic search route is registered');
+    assert(semanticRoute.route.stack.length >= 2, 'Semantic search route is protected with mandatory authentication');
+
+    const agentTraceRoute = aiRoutes.stack.find((layer) => layer.route && layer.route.path === '/agent-runs/:traceId');
+    assert(agentTraceRoute !== null, 'Agent trace route is registered');
+    assert(agentTraceRoute.route.stack.length >= 2, 'Agent trace route is protected with mandatory authentication');
 
     // -------------------------------------------------------------------------
     // TEST 15: Vector-Based Specification Document Chunking & Atlas Storage
@@ -655,6 +669,138 @@ async function runAcceptanceChecks() {
     } finally {
       process.env.NODE_ENV = originalEnv;
     }
+
+    // -------------------------------------------------------------------------
+    // TEST 22: Mandatory Server Sessions & Stateless JWT Rejection
+    // -------------------------------------------------------------------------
+    console.log('\nTEST 22: Mandatory Server Sessions & Stateless JWT Rejection');
+    const { authenticate, getJwtSecret } = require('./middleware/auth');
+    
+    // 22a: A JWT token that lacks a sessionId must be strictly rejected
+    const secret = getJwtSecret();
+    const statelessJwt = jwt.sign({ id: buyerUser._id, email: buyerUser.email, role: 'buyer' }, secret, { expiresIn: '1h' });
+    let statelessJwtRejected = false;
+    let statelessJwtStatus = 0;
+    const mockStatelessReq = {
+      headers: { authorization: `Bearer ${statelessJwt}` },
+      cookies: {},
+    };
+    const mockStatelessRes = {
+      status: (code) => {
+        statelessJwtStatus = code;
+        return {
+          json: () => { statelessJwtRejected = true; },
+        };
+      },
+    };
+    await authenticate(mockStatelessReq, mockStatelessRes, () => {});
+    assert(
+      statelessJwtRejected && statelessJwtStatus === 401,
+      'authenticate strictly rejects JWT without a valid sessionId (401 Unauthorized)'
+    );
+
+    // 22b: A JWT with an invalid or non-existent sessionId must be rejected
+    const fakeSessionId = new mongoose.Types.ObjectId();
+    const fakeSessionJwt = jwt.sign({ id: buyerUser._id, sessionId: fakeSessionId, email: buyerUser.email, role: 'buyer' }, secret, { expiresIn: '1h' });
+    let fakeSessionRejected = false;
+    let fakeSessionStatus = 0;
+    const mockFakeSessionReq = {
+      headers: { authorization: `Bearer ${fakeSessionJwt}` },
+      cookies: {},
+    };
+    const mockFakeSessionRes = {
+      status: (code) => {
+        fakeSessionStatus = code;
+        return {
+          json: () => { fakeSessionRejected = true; },
+        };
+      },
+    };
+    await authenticate(mockFakeSessionReq, mockFakeSessionRes, () => {});
+    assert(
+      fakeSessionRejected && fakeSessionStatus === 401,
+      'authenticate strictly rejects JWT when session does not exist in MongoDB (401 Unauthorized)'
+    );
+
+    // -------------------------------------------------------------------------
+    // TEST 23: Listing Approval Workflow & Status Guardrail
+    // -------------------------------------------------------------------------
+    console.log('\nTEST 23: Listing Approval Workflow & Status Guardrail');
+    const listingController = require('./controllers/listingController');
+    const moderationController = require('./controllers/moderationController');
+    const sellerUser = await User.findOne({ role: 'seller' });
+    const moderatorUser = await User.findOne({ role: 'moderator' });
+
+    // 23a: New listing created by seller must start with status 'pending'
+    const newSellerListing = await Listing.create({
+      title: 'Test Pending Laptop For Approval Testing',
+      description: 'Clean developer laptop testing the pending moderation workflow.',
+      category: 'laptops',
+      brand: 'Lenovo',
+      modelName: 'ThinkPad T14 Gen 3 AMD',
+      price: 550,
+      condition: 'excellent',
+      sellerId: sellerUser._id,
+    });
+    assert(newSellerListing.status === 'pending', 'New seller listing strictly defaults to status: "pending"');
+
+    // 23b: Seller attempting to PATCH status to 'active' must be rejected with 403
+    let patchStatusBlocked = false;
+    let patchStatusCode = 0;
+    const mockPatchReq = {
+      params: { id: newSellerListing._id.toString() },
+      user: sellerUser,
+      body: { status: 'active' },
+    };
+    const mockPatchRes = {
+      status: (code) => {
+        patchStatusCode = code;
+        return {
+          json: () => { patchStatusBlocked = true; },
+        };
+      },
+    };
+    await listingController.updateListing(mockPatchReq, mockPatchRes, () => {});
+    assert(
+      patchStatusBlocked && patchStatusCode === 403,
+      'Sellers cannot set/change listing status to "active" via PATCH (403 Forbidden)'
+    );
+
+    // 23c: Moderator approves pending listing -> status becomes 'active'
+    let approveSuccess = false;
+    const mockApproveReq = {
+      params: { id: newSellerListing._id.toString() },
+      user: moderatorUser,
+      body: { action: 'approved', reason: 'Verified specifications and hardware photos comply with standards' },
+    };
+    const mockApproveRes = {
+      status: (code) => ({
+        json: (data) => {
+          if (code === 200 && data.success) approveSuccess = true;
+        },
+      }),
+    };
+    await moderationController.takeModerationAction(mockApproveReq, mockApproveRes, () => {});
+    const approvedListing = await Listing.findById(newSellerListing._id);
+    assert(
+      approveSuccess && approvedListing.status === 'active',
+      'Moderator successfully approves listing (pending -> active) with audit event'
+    );
+
+    // -------------------------------------------------------------------------
+    // TEST 24: Moderation Audit Attribution Correctness
+    // -------------------------------------------------------------------------
+    console.log('\nTEST 24: Moderation Audit Attribution Correctness');
+    const approvalAudit = await ModerationEvent.findOne({ listingId: newSellerListing._id, action: 'approved' });
+    assert(approvalAudit !== null, 'Moderation audit event was recorded for approval');
+    assert(
+      approvalAudit.moderatorId.toString() === moderatorUser._id.toString(),
+      'Staff decision correctly attributes moderatorId to the acting moderator'
+    );
+    assert(
+      approvalAudit.reportedBy === null,
+      'Staff decision leaves reportedBy as null'
+    );
 
     // Summary
     console.log('\n===============================================================');

@@ -49,6 +49,12 @@ export const ListingSearchScreen = ({ onOpenDetail, onOpenAgent }) => {
     setError(null);
     try {
       if (isSemanticMode && search.trim()) {
+        if (!user) {
+          setError('Semantic AI discovery is a member-only feature. Please sign in or use standard keyword search.');
+          setListings([]);
+          setLoading(false);
+          return;
+        }
         const res = await api.ai.semanticSearch({
           query: search,
           budget: maxPrice ? Number(maxPrice) : undefined,

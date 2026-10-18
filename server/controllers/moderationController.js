@@ -5,6 +5,7 @@ const ModerationEvent = require('../models/ModerationEvent');
 
 const moderationActionSchema = z.object({
   action: z.enum([
+    'approved',
     'flagged',
     'suspended',
     'reinstated',
@@ -21,6 +22,7 @@ exports.getModerationQueue = async (req, res, next) => {
   try {
     const listings = await Listing.find({
       $or: [
+        { status: 'pending' },
         { status: 'suspended' },
         { evidenceStatus: 'pending' },
         { reportCount: { $gt: 0 } },
@@ -71,7 +73,11 @@ exports.takeModerationAction = async (req, res, next) => {
 
     // Enforce Rule: Moderator CANNOT silently rewrite seller's condition declaration!
     // They can only flag, suspend, reinstate, or verify/reject evidence.
-    if (action === 'suspended') {
+    if (action === 'approved') {
+      newStatus = 'active';
+      listing.status = 'active';
+      listing.moderationNote = notes || `Approved by moderator: ${reason}`;
+    } else if (action === 'suspended') {
       newStatus = 'suspended';
       listing.status = 'suspended';
       listing.moderationNote = `Suspended by moderator: ${reason}`;
@@ -108,6 +114,7 @@ exports.takeModerationAction = async (req, res, next) => {
     const event = await ModerationEvent.create({
       listingId: listing._id,
       moderatorId: req.user._id,
+      reportedBy: null,
       action,
       reason,
       previousStatus,
@@ -134,6 +141,7 @@ exports.getModerationHistory = async (req, res, next) => {
     const { id } = req.params;
     const history = await ModerationEvent.find({ listingId: id })
       .populate('moderatorId', 'name email')
+      .populate('reportedBy', 'name email')
       .sort({ createdAt: -1 })
       .lean();
 

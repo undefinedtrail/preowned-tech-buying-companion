@@ -193,7 +193,7 @@ exports.createListing = async (req, res, next) => {
     const newListing = new Listing({
       ...validatedData,
       sellerId: req.user._id,
-      status: 'active',
+      status: 'pending', // New seller listings must start as pending, never active
       evidenceStatus: 'none',
       embedding,
     });
@@ -202,7 +202,7 @@ exports.createListing = async (req, res, next) => {
 
     return res.status(201).json({
       success: true,
-      message: 'Listing published successfully.',
+      message: 'Listing submitted for review. It will become visible once approved by a moderator.',
       listing: newListing,
     });
   } catch (error) {
@@ -228,6 +228,25 @@ exports.updateListing = async (req, res, next) => {
         message: 'Unauthorized: You can only edit listings that you own.',
       });
     }
+
+    // Sellers must NOT be able to set/change listing status to active or suspended, or bypass moderation
+    if (req.body.status && ['active', 'suspended', 'pending'].includes(req.body.status)) {
+      return res.status(403).json({
+        success: false,
+        message: 'Unauthorized: Sellers cannot set listing status to active or suspended. Moderation approval is required.',
+      });
+    }
+
+    if (validatedData.status === 'sold') {
+      if (listing.status !== 'active') {
+        return res.status(400).json({
+          success: false,
+          message: 'Only active listings can be marked as sold.',
+        });
+      }
+      listing.status = 'sold';
+    }
+    delete validatedData.status;
 
     // Merge updates
     Object.assign(listing, validatedData);
@@ -330,11 +349,12 @@ exports.reportListing = async (req, res, next) => {
     }
     await listing.save();
 
-    // Log moderation audit event
+    // Log moderation audit event - Community report filed by user (NOT a moderator action)
     await ModerationEvent.create({
       listingId: listing._id,
-      moderatorId: req.user._id,
-      action: 'inconsistency_noted',
+      moderatorId: null,
+      reportedBy: req.user._id,
+      action: 'report_filed',
       reason: `Community report: ${reason}`,
       previousStatus: listing.status,
       newStatus: listing.status,

@@ -20,17 +20,17 @@ router.post(
   aiController.buyerChatRAG
 );
 
-// Semantic discovery endpoint
+// Semantic discovery endpoint (Protected Member Feature)
 router.post(
   '/semantic-search',
-  optionalAuth,
+  authenticate,
   aiController.semanticSearch
 );
 
-// Agent execution traces
+// Agent execution traces (Protected Member Feature)
 router.get(
   '/agent-runs/:traceId',
-  optionalAuth,
+  authenticate,
   aiController.getAgentTrace
 );
 

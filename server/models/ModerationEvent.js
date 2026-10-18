@@ -11,12 +11,19 @@ const moderationEventSchema = new mongoose.Schema(
     moderatorId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
-      required: true,
+      default: null,
+      index: true,
+    },
+    reportedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
       index: true,
     },
     action: {
       type: String,
       enum: [
+        'approved',
         'flagged',
         'suspended',
         'reinstated',

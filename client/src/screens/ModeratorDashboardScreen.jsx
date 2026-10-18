@@ -229,6 +229,7 @@ export const ModeratorDashboardScreen = () => {
                       onChange={(e) => setAction(e.target.value)}
                       className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-white"
                     >
+                      <option value="approved">Approve Listing (Pending → Active)</option>
                       <option value="suspended">Suspend Listing (Blocks new viewings & public search)</option>
                       <option value="reinstated">Reinstate Listing (Return to active)</option>
                       <option value="flagged">Flag Listing (Increment report counter)</option>
@@ -295,7 +296,7 @@ export const ModeratorDashboardScreen = () => {
                           Reason: {h.reason}
                         </div>
                         <div className="text-[10px] text-slate-500">
-                          Moderator: {h.moderatorId?.name} • Status change: {h.previousStatus} → {h.newStatus}
+                          {h.moderatorId ? `Moderator: ${h.moderatorId?.name || 'Staff'}` : `Reported by: ${h.reportedBy?.name || 'Community Member'}`} • Status change: {h.previousStatus} → {h.newStatus}
                         </div>
                       </div>
                     ))}

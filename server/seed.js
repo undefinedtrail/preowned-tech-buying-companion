@@ -526,7 +526,37 @@ async function seedDatabase() {
       embedding: await getEmbedding('Valve Steam Deck OLED portable gaming handheld PC dock Linux'),
     });
 
-    console.log('[Seeder] Created 7 test listings with demonstration scenarios.');
+    // LISTING 8: PENDING listing awaiting moderator approval
+    const listingPending = await Listing.create({
+      title: 'Apple iPad Pro 11-inch M2 128GB Wi-Fi Space Gray (Pending Approval)',
+      description: 'Clean iPad Pro M2 tablet with Apple Pencil 2 support. Awaiting staff review.',
+      category: 'laptops',
+      brand: 'Apple',
+      modelName: 'iPad Pro 11 M2',
+      price: 520,
+      currency: 'USD',
+      condition: 'excellent',
+      structuredSpecs: {
+        cpu: 'Apple M2 8-Core',
+        ramGb: 8,
+        storageGb: 128,
+      },
+      conditionDisclosures: {
+        batteryHealthPct: 99,
+        batteryCycleCount: 15,
+        screenCondition: 'Flawless',
+        bodyCondition: 'Pristine',
+        functionalDefects: [],
+        sellerConditionSummary: 'Like-new condition tablet.',
+      },
+      status: 'pending', // PENDING APPROVAL
+      evidenceStatus: 'none',
+      sellerId: seller1._id,
+      images: ['https://images.unsplash.com/photo-1544244015-0df4b3ffc6b0?w=800&q=80'],
+      embedding: await getEmbedding('Apple iPad Pro 11 inch M2 128GB pending approval'),
+    });
+
+    console.log('[Seeder] Created 8 test listings with demonstration scenarios (including pending approval).');
 
     // 4. Create Private Evidence (Enforcing Strict Serial Number Masking)
     console.log('[Seeder] Attaching private evidence documents with serial numbers...');
