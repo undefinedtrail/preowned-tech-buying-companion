@@ -195,8 +195,8 @@ exports.getListingQuestions = async (req, res, next) => {
       $or: [{ buyerId: req.user._id }, { sellerId: req.user._id }],
     };
 
-    // If moderator, can inspect any thread
-    if (req.user.role === 'moderator') {
+    // If staff-assigned moderator, can inspect any thread
+    if (req.user.role === 'moderator' && req.user.isStaffAssigned) {
       delete query.$or;
     }
 
@@ -230,12 +230,20 @@ exports.replyQuestion = async (req, res, next) => {
 
     const isBuyer = thread.buyerId.toString() === req.user._id.toString();
     const isSeller = thread.sellerId.toString() === req.user._id.toString();
-    const isModerator = req.user.role === 'moderator';
+    const isModerator = req.user.role === 'moderator' && req.user.isStaffAssigned;
 
     if (!isBuyer && !isSeller && !isModerator) {
       return res.status(403).json({
         success: false,
         message: 'Unauthorized: You are not a participant in this conversation.',
+      });
+    }
+
+    const listing = await Listing.findById(thread.listingId);
+    if (listing && listing.status === 'suspended' && !isModerator) {
+      return res.status(400).json({
+        success: false,
+        message: 'Inquiry Blocked: This listing has been suspended for safety/moderation review.',
       });
     }
 

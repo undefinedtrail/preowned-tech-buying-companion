@@ -165,6 +165,12 @@ async function searchListingsSemantic({
           },
         },
         { $unwind: '$seller' },
+        {
+          $addFields: {
+            similarityScore: { $meta: 'vectorSearchScore' },
+            passesHardBudget: true,
+          },
+        },
       ];
 
       const rawAtlasCandidates = await Listing.aggregate(atlasPipeline);

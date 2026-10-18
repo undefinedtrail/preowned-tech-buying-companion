@@ -489,6 +489,7 @@ Remember: **A seller claim is not a manufacturer guarantee.** Always verify seri
  * Serial numbers and receipts are NEVER injected into AI context!
  */
 async function answerSpecificationQuestion({ listingId, question }) {
+  const start = Date.now();
   const listing = await Listing.findById(listingId).lean();
   if (!listing) throw new Error('Listing not found');
 
@@ -500,14 +501,33 @@ async function answerSpecificationQuestion({ listingId, question }) {
   // LangChain Chunking of Official Manuals
   const manualChunks = await chunkSpecificationManuals(officialSpec);
 
-  // Filter or prioritize chunks relevant to the user's question
-  const qWords = question.toLowerCase().split(/\s+/).filter((w) => w.length > 2);
-  const relevantChunks = manualChunks.filter((doc) => {
+  // Filter stop words and score chunks based on content-bearing feature keywords
+  const stopWords = new Set([
+    'this', 'that', 'these', 'those', 'laptop', 'device', 'computer', 'system',
+    'support', 'supports', 'does', 'have', 'with', 'what', 'where', 'when',
+    'from', 'will', 'your', 'about', 'can', 'the', 'and', 'for', 'model', 'any'
+  ]);
+  const featureWords = question
+    .toLowerCase()
+    .split(/\s+/)
+    .map((w) => w.replace(/[^a-z0-9]/g, ''))
+    .filter((w) => w.length > 2 && !stopWords.has(w));
+
+  const scoredChunks = manualChunks.map((doc) => {
     const content = doc.pageContent.toLowerCase();
-    return qWords.some((w) => content.includes(w));
+    const title = (doc.metadata.sectionTitle || '').toLowerCase();
+    let score = 0;
+    featureWords.forEach((word) => {
+      if (title.includes(word)) score += 3;
+      if (content.includes(word)) score += 1;
+    });
+    return { doc, score };
   });
 
-  const selectedChunks = relevantChunks.length > 0 ? relevantChunks : manualChunks.slice(0, 3);
+  scoredChunks.sort((a, b) => b.score - a.score);
+  const matchedChunks = scoredChunks.filter((c) => c.score > 0).map((c) => c.doc);
+  const selectedChunks = matchedChunks.length > 0 ? matchedChunks.slice(0, 3) : [];
+
   const manualContext = selectedChunks
     .map((doc) => `[Source: ${doc.metadata.sourceDoc} | Section: ${doc.metadata.sectionTitle}] "${doc.pageContent}"`)
     .join('\n\n');
@@ -530,12 +550,16 @@ Buyer Question: {question}
 STRICT SAFETY AND CITATION RULES:
 1. Clearly differentiate between "Manufacturer Guarantees" (supported by the cited official manual) and "Seller Declarations" (unverified seller claims).
 2. You MUST cite the specific section and document name for every manufacturer guarantee claim.
-3. You MUST include this explicit disclaimer: "Note: A seller claim is not a manufacturer guarantee."
-4. NEVER predict remaining device lifespan, battery cycles, or certify counterfeit authenticity.
-5. Provide a clear, objective recommendation based on the facts.
+3. If the manufacturer manual does not support or confirm the question, explicitly state that the capability is UNSUPPORTED and provide a graceful missing-data response.
+4. You MUST include this explicit disclaimer: "Note: A seller claim is not a manufacturer guarantee."
+5. NEVER predict remaining device lifespan, battery cycles, or certify counterfeit authenticity.
+6. Provide a clear, objective recommendation based on the facts.
 `);
 
   let answer = '';
+  let isSupported = true;
+  let gracefulMissingDataNotice = null;
+
   const isOllamaUp = await checkOllamaAvailability();
 
   if (isOllamaUp) {
@@ -557,20 +581,42 @@ STRICT SAFETY AND CITATION RULES:
     const qLower = question.toLowerCase();
     let specificDetail = '';
 
+    // Check for RAM upgrade queries and detect unsupported RAM capacities
     if (qLower.includes('ram') || qLower.includes('memory') || qLower.includes('upgrade')) {
-      if (officialSpec?.officialSpecs?.ramUpgradeable) {
-        specificDetail = `According to the **Official ${officialSpec.brand} Service Manual**: The system features **${officialSpec.officialSpecs.ramSlotsCount} SO-DIMM slots** and supports up to **${officialSpec.officialSpecs.maxRamGb}GB DDR5/DDR4 RAM**. Therefore, memory is user-upgradeable.`;
-      } else if (officialSpec) {
-        specificDetail = `According to the **Official ${officialSpec.brand} Reference Specification**: Memory is **soldered LPDDR (${officialSpec.officialSpecs.ramType})** and is **NOT user-upgradeable** post-purchase. Maximum capacity was fixed at factory order.`;
+      const askedNumMatch = question.match(/(\d+)\s*gb/i);
+      const requestedGb = askedNumMatch ? parseInt(askedNumMatch[1], 10) : null;
+
+      if (!officialSpec) {
+        isSupported = false;
+        gracefulMissingDataNotice = 'Manufacturer specification manual is not indexed for this device.';
+        specificDetail = `⚠️ **Graceful Missing-Data Notice**: Manufacturer hardware documentation was not indexed for ${listing.brand} ${listing.modelName}. RAM upgradeability cannot be guaranteed without official manual verification.`;
+      } else if (!officialSpec.officialSpecs?.ramUpgradeable) {
+        isSupported = false;
+        specificDetail = `**UNSUPPORTED UPGRADE**: According to the **Official ${officialSpec.brand} Reference Specification**: Memory is **soldered LPDDR (${officialSpec.officialSpecs?.ramType || 'LPDDR5'})** and is **NOT user-upgradeable** post-purchase. Factory configuration is fixed.`;
+      } else if (requestedGb && requestedGb > (officialSpec.officialSpecs?.maxRamGb || 64)) {
+        isSupported = false;
+        specificDetail = `**UNSUPPORTED CAPACITY**: Upgrading to ${requestedGb}GB RAM is **unsupported**. According to the **Official ${officialSpec.brand} Service Manual**: The maximum tested and supported memory ceiling is **${officialSpec.officialSpecs.maxRamGb}GB** across ${officialSpec.officialSpecs.ramSlotsCount} SO-DIMM slots.`;
       } else {
-        specificDetail = `Manufacturer manual was not indexed for this specific model, so RAM upgradeability cannot be guaranteed.`;
+        isSupported = true;
+        specificDetail = `According to the **Official ${officialSpec.brand} Service Manual**: The system features **${officialSpec.officialSpecs.ramSlotsCount} SO-DIMM slots** and supports up to **${officialSpec.officialSpecs.maxRamGb}GB DDR5/DDR4 RAM**. Therefore, memory is user-upgradeable.`;
       }
     } else if (qLower.includes('storage') || qLower.includes('ssd')) {
-      specificDetail = `According to the **Official Manufacturer Manual**: Storage uses an M.2 NVMe PCIe slot and is replaceable with standard 2280/2230 SSDs.`;
+      if (officialSpec?.officialSpecs?.storageUpgradeable) {
+        specificDetail = `According to the **Official ${officialSpec.brand} Manual**: Storage uses an M.2 NVMe PCIe slot and is replaceable with standard 2280/2230 SSDs.`;
+      } else {
+        isSupported = false;
+        specificDetail = `According to the **Official Manufacturer Manual**: Storage is integrated/proprietary and cannot be upgraded with standard M.2 drives.`;
+      }
     } else if (qLower.includes('battery') || qLower.includes('life') || qLower.includes('health')) {
       specificDetail = `The official manual specifies a **${officialSpec?.officialSpecs?.powerAdapterWattage || 65}W** power profile. Note that while the seller declared condition grade **'${listing.condition}'**, battery health percentage is **${listing.conditionDisclosures?.batteryHealthPct ? listing.conditionDisclosures.batteryHealthPct + '%' : 'NOT disclosed'}**.`;
+    } else if (selectedChunks.length === 0) {
+      // Graceful Missing-Data Response for undocumented / unsupported capabilities
+      isSupported = false;
+      gracefulMissingDataNotice = 'No official manufacturer documentation confirms this specific feature.';
+      specificDetail = `⚠️ **Data Gap / Unsupported Capability**: The official ${officialSpec ? officialSpec.brand : listing.brand} reference manual does not contain verified documentation regarding this requirement ("${question}"). Because manufacturer documentation does not confirm this feature, it must be treated as **unsupported** and unverified.`;
     } else {
-      specificDetail = `Based on the official specifications, this ${listing.brand} ${listing.modelName} is equipped with ${listing.structuredSpecs?.cpu || 'standard processor'} and has an official repairability rating of ${officialSpec?.officialSpecs?.repairabilityScore || 'N/A'}/10.`;
+      const topChunk = selectedChunks[0];
+      specificDetail = `According to **${topChunk.metadata.sourceDoc}** (${topChunk.metadata.sectionTitle}): "${topChunk.pageContent}".`;
     }
 
     answer = `### Specification RAG Verification for ${listing.brand} ${listing.modelName}
@@ -590,11 +636,20 @@ The seller states: *"Installed ${listing.structuredSpecs?.ramGb || 'N/A'}GB RAM,
     question,
     answer,
     hasOfficialSpec: Boolean(officialSpec),
+    isSupported,
+    gracefulMissingDataNotice,
     chunksRetrieved: selectedChunks.length,
     sourcesConsulted: [
       officialSpec ? `Official ${officialSpec.brand} Hardware Documentation` : 'Generic Specification Registry',
       `Seller Listing Disclosures (${listing.title})`,
     ],
+    toolExecution: {
+      toolName: 'specificationRAG',
+      status: 'success',
+      durationMs: Date.now() - start,
+      chunksExamined: manualChunks.length,
+      chunksRetrieved: selectedChunks.length,
+    },
   };
 }
 

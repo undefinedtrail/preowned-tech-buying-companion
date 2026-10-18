@@ -534,13 +534,23 @@ export const ListingDetailComparisonScreen = ({ listingId, onBack, initialTab = 
         {/* RAG Answer Display */}
         {ragAnswer && (
           <div className="p-5 rounded-2xl bg-slate-950 border border-slate-700/80 space-y-3 animate-in fade-in duration-200">
-            <div className="text-xs font-bold text-emerald-400 flex items-center justify-between">
+            <div className="text-xs font-bold text-emerald-400 flex flex-wrap items-center justify-between gap-2">
               <span className="flex items-center gap-1.5">
-                <CheckCircle2 className="h-4 w-4" /> Cited Specification Verification
+                {ragAnswer.isSupported ? (
+                  <CheckCircle2 className="h-4 w-4 text-emerald-400" />
+                ) : (
+                  <AlertTriangle className="h-4 w-4 text-amber-400" />
+                )}
+                {ragAnswer.isSupported ? 'Cited Specification Verification' : 'Unsupported Capability / Missing Data Notice'}
               </span>
-              <span className="text-[10px] text-slate-400 font-normal">
-                Sources: {ragAnswer.sourcesConsulted?.join(' • ')}
-              </span>
+              <div className="flex items-center gap-2 text-[10px] text-slate-400 font-normal">
+                {ragAnswer.toolExecution && (
+                  <span className="px-2 py-0.5 rounded-full bg-slate-800 border border-slate-700 font-mono text-emerald-300">
+                    {ragAnswer.toolExecution.chunksRetrieved} manual chunks retrieved ({ragAnswer.toolExecution.durationMs}ms)
+                  </span>
+                )}
+                <span>Sources: {ragAnswer.sourcesConsulted?.join(' • ')}</span>
+              </div>
             </div>
             <div className="prose prose-invert prose-xs text-xs text-slate-200 leading-relaxed whitespace-pre-line">
               {ragAnswer.answer}

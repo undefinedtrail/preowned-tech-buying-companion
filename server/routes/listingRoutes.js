@@ -54,4 +54,13 @@ router.get(
   listingController.getMyListings
 );
 
+// Moderator protected route: POST /api/listings/:id/moderation
+const moderationController = require('../controllers/moderationController');
+router.post(
+  '/:id/moderation',
+  authenticate,
+  requireRole(['moderator']),
+  moderationController.takeModerationAction
+);
+
 module.exports = router;

@@ -354,6 +354,135 @@ async function runAcceptanceChecks() {
     assert(chunks[0].pageContent.length > 0, 'Document chunk contains verified text content');
     assert(chunks[0].metadata.sourceType === 'manufacturer_specification', 'Document chunk carries verified manufacturer_specification metadata');
 
+    // -------------------------------------------------------------------------
+    // TEST 16: Unsupported Compatibility Answers & Graceful Missing-Data Response
+    // -------------------------------------------------------------------------
+    console.log('\nTEST 16: Unsupported Compatibility Answers & Missing-Data Response');
+    const dellLaptop = await Listing.findOne({ brand: 'Dell' });
+    
+    // 16a: Unsupported RAM capacity beyond maximum
+    const unsupportedRamResponse = await aiService.answerSpecificationQuestion({
+      listingId: dellLaptop._id,
+      question: 'Can I upgrade the RAM to 128GB on this Dell laptop?',
+    });
+    assert(
+      unsupportedRamResponse.isSupported === false,
+      'RAG correctly flags 128GB RAM upgrade as unsupported on Dell XPS (Capped at 64GB max)'
+    );
+    assert(
+      unsupportedRamResponse.answer.includes('UNSUPPORTED') || unsupportedRamResponse.answer.includes('64GB'),
+      'RAG explicitly cites manufacturer manual maximum ceiling of 64GB'
+    );
+
+    // 16b: Undocumented capability (Graceful Missing-Data Response)
+    const missingDataResponse = await aiService.answerSpecificationQuestion({
+      listingId: dellLaptop._id,
+      question: 'Does this laptop support direct satellite communication uplink?',
+    });
+    assert(
+      missingDataResponse.isSupported === false,
+      'Undocumented capability correctly returns isSupported=false'
+    );
+    assert(
+      missingDataResponse.gracefulMissingDataNotice !== null,
+      'RAG provides a structured gracefulMissingDataNotice for undocumented capabilities'
+    );
+    assert(
+      missingDataResponse.toolExecution && missingDataResponse.toolExecution.toolName === 'specificationRAG',
+      'RAG response includes structured toolExecution status'
+    );
+
+    // -------------------------------------------------------------------------
+    // TEST 17: CSRF Attack Rejection with Mismatched Token
+    // -------------------------------------------------------------------------
+    console.log('\nTEST 17: CSRF Rejection on Mismatched Token Attack');
+    let csrfAttackBlocked = false;
+    let csrfAttackStatus = 0;
+    const mockAttackReq = {
+      method: 'POST',
+      path: '/api/shortlists',
+      cookies: { token: 'valid-session', 'XSRF-TOKEN': 'genuine-session-csrf' },
+      headers: { 'x-csrf-token': 'attacker-forged-csrf' },
+    };
+    const mockAttackRes = {
+      status: (code) => {
+        csrfAttackStatus = code;
+        return {
+          json: () => { csrfAttackBlocked = true; },
+        };
+      },
+    };
+    verifyCsrf(mockAttackReq, mockAttackRes, () => {});
+    assert(
+      csrfAttackBlocked && csrfAttackStatus === 403,
+      'CSRF Protection blocks request with mismatched X-CSRF-Token header (403 Forbidden)'
+    );
+
+    // -------------------------------------------------------------------------
+    // TEST 18: Unverified Email Action Enforcement
+    // -------------------------------------------------------------------------
+    console.log('\nTEST 18: Unverified Email Action Enforcement Guard');
+    const { requireVerifiedEmail, requireRole } = require('./middleware/auth');
+    let emailBlocked = false;
+    let emailBlockedStatus = 0;
+    const mockUnverifiedReq = {
+      user: { isEmailVerified: false, role: 'buyer' },
+    };
+    const mockEmailRes = {
+      status: (code) => {
+        emailBlockedStatus = code;
+        return {
+          json: () => { emailBlocked = true; },
+        };
+      },
+    };
+    requireVerifiedEmail(mockUnverifiedReq, mockEmailRes, () => {});
+    assert(
+      emailBlocked && emailBlockedStatus === 403,
+      'requireVerifiedEmail blocks unverified accounts from protected action (403 Forbidden)'
+    );
+
+    // -------------------------------------------------------------------------
+    // TEST 19: Direct Route Check for POST /api/listings/:id/moderation
+    // -------------------------------------------------------------------------
+    console.log('\nTEST 19: Direct Route Check for POST /api/listings/:id/moderation');
+    const listingRoutes = require('./routes/listingRoutes');
+    const directModerationRoute = listingRoutes.stack.find(
+      (layer) => layer.route && layer.route.path === '/:id/moderation'
+    );
+    assert(
+      directModerationRoute !== undefined,
+      'Direct route POST /api/listings/:id/moderation is mounted per project brief'
+    );
+    assert(
+      directModerationRoute.route.methods.post === true,
+      'POST method is registered for /api/listings/:id/moderation'
+    );
+
+    // -------------------------------------------------------------------------
+    // TEST 20: Moderator Staff Assignment RBAC Enforcement
+    // -------------------------------------------------------------------------
+    console.log('\nTEST 20: Moderator Staff Assignment RBAC Security');
+    let modViolationBlocked = false;
+    let modViolationStatus = 0;
+    const mockFakeModReq = {
+      user: { role: 'moderator', isStaffAssigned: false },
+    };
+    const mockModRes = {
+      status: (code) => {
+        modViolationStatus = code;
+        return {
+          json: () => { modViolationBlocked = true; },
+        };
+      },
+    };
+    const modGuard = requireRole(['moderator']);
+    modGuard(mockFakeModReq, mockModRes, () => {});
+    assert(
+      modViolationBlocked && modViolationStatus === 403,
+      'requireRole blocks moderator accounts lacking administrator staff assignment (403 Security Violation)'
+    );
+
     // Summary
     console.log('\n===============================================================');
     console.log(`TEST RESULTS: ${passedTests} / ${totalTests} CHECKS PASSED (100% PASS RATE)`);
