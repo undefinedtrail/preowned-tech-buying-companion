@@ -1,3 +1,5 @@
+const API_BASE = '/api';
+
 function getCookie(name) {
   if (typeof document === 'undefined') return null;
   const match = document.cookie.match(new RegExp('(^|;\\s*)(' + name + ')=([^;]*)'));
