@@ -1,10 +1,21 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
+const Session = require('../models/Session');
 
-const JWT_SECRET = process.env.JWT_SECRET || 'preowned_tech_companion_jwt_super_secure_secret_2026_xyz';
+const getJwtSecret = () => {
+  const secret = process.env.JWT_SECRET;
+  if (!secret) {
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error('FATAL SECURITY ERROR: JWT_SECRET environment variable must be set in production!');
+    }
+    return 'preowned_tech_companion_jwt_super_secure_secret_2026_xyz';
+  }
+  return secret;
+};
 
 /**
- * Verifies JWT token from either HTTP-only cookie or Bearer Authorization header
+ * Authenticates requests using either server-side session cookies or Bearer JWT token.
+ * Validates that active server-side session exists in the database and is not expired.
  */
 const authenticate = async (req, res, next) => {
   try {
@@ -26,14 +37,34 @@ const authenticate = async (req, res, next) => {
       });
     }
 
+    const JWT_SECRET = getJwtSecret();
     const decoded = jwt.verify(token, JWT_SECRET);
-    const user = await User.findById(decoded.id);
 
+    // Verify user exists
+    const user = await User.findById(decoded.id);
     if (!user) {
       return res.status(401).json({
         success: false,
         message: 'Invalid session token: User does not exist.',
       });
+    }
+
+    // Verify server-side session in database if sessionId is present
+    if (decoded.sessionId) {
+      const activeSession = await Session.findOne({
+        _id: decoded.sessionId,
+        userId: user._id,
+        expiresAt: { $gt: new Date() },
+      });
+
+      if (!activeSession) {
+        return res.status(401).json({
+          success: false,
+          message: 'Session expired or revoked by server. Please log in again.',
+        });
+      }
+
+      req.session = activeSession;
     }
 
     req.user = user;
@@ -48,7 +79,7 @@ const authenticate = async (req, res, next) => {
 };
 
 /**
- * Optional authentication middleware: parses user if token exists, otherwise continues anonymously
+ * Optional authentication: parses user/session if present, continues as guest if not.
  */
 const optionalAuth = async (req, res, next) => {
   try {
@@ -63,18 +94,35 @@ const optionalAuth = async (req, res, next) => {
     }
 
     if (token) {
+      const JWT_SECRET = getJwtSecret();
       const decoded = jwt.verify(token, JWT_SECRET);
-      req.user = await User.findById(decoded.id);
+      const user = await User.findById(decoded.id);
+      if (user) {
+        if (decoded.sessionId) {
+          const activeSession = await Session.findOne({
+            _id: decoded.sessionId,
+            userId: user._id,
+            expiresAt: { $gt: new Date() },
+          });
+          if (activeSession) {
+            req.session = activeSession;
+            req.user = user;
+          }
+        } else {
+          req.user = user;
+        }
+      }
     }
   } catch (err) {
-    // Continue as guest
     req.user = null;
+    req.session = null;
   }
   next();
 };
 
 /**
  * Enforces email verification requirement
+ * Page 2: "Require verified accounts for listing, messaging and viewing requests."
  */
 const requireVerifiedEmail = (req, res, next) => {
   if (!req.user) {
@@ -84,7 +132,8 @@ const requireVerifiedEmail = (req, res, next) => {
   if (!req.user.isEmailVerified) {
     return res.status(403).json({
       success: false,
-      message: 'Access restricted: Please verify your email before listing, messaging, or booking viewings.',
+      message: 'Email Verification Required: Please verify your email before listing, messaging, or booking viewings.',
+      isEmailVerified: false,
     });
   }
 
@@ -93,7 +142,7 @@ const requireVerifiedEmail = (req, res, next) => {
 
 /**
  * Enforces Role-Based Access Control (RBAC)
- * @param {Array<string>} roles
+ * Protects staff/moderator endpoints with additional isStaffAssigned check
  */
 const requireRole = (roles = []) => {
   return (req, res, next) => {
@@ -108,11 +157,20 @@ const requireRole = (roles = []) => {
       });
     }
 
+    // Extra security rule: If accessing moderator functionality, ensure administrator assigned staff status
+    if (roles.includes('moderator') && req.user.role === 'moderator' && !req.user.isStaffAssigned) {
+      return res.status(403).json({
+        success: false,
+        message: 'Security Violation: Moderator status is administrator-assigned only.',
+      });
+    }
+
     next();
   };
 };
 
 module.exports = {
+  getJwtSecret,
   authenticate,
   optionalAuth,
   requireVerifiedEmail,

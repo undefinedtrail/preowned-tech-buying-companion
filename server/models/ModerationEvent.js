@@ -23,6 +23,7 @@ const moderationEventSchema = new mongoose.Schema(
         'evidence_verified',
         'evidence_rejected',
         'inconsistency_noted',
+        'report_filed',
       ],
       required: [true, 'Moderation action is required'],
     },

@@ -7,10 +7,20 @@ const {
   requireRole,
   requireVerifiedEmail,
 } = require('../middleware/auth');
+const { reportLimiter } = require('../middleware/rateLimiter');
 
 // Public listing browsing and details
 router.get('/', listingController.getListings);
 router.get('/:id', optionalAuth, listingController.getListingById);
+
+// Report a suspicious listing (Authenticated users)
+router.post(
+  '/:id/report',
+  authenticate,
+  requireVerifiedEmail,
+  reportLimiter,
+  listingController.reportListing
+);
 
 // Seller protected routes
 router.post(

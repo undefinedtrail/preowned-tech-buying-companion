@@ -1,9 +1,19 @@
-const API_BASE = '/api';
+function getCookie(name) {
+  if (typeof document === 'undefined') return null;
+  const match = document.cookie.match(new RegExp('(^|;\\s*)(' + name + ')=([^;]*)'));
+  return match ? decodeURIComponent(match[3]) : null;
+}
 
 async function request(endpoint, options = {}) {
   const defaultHeaders = {
     'Content-Type': 'application/json',
   };
+
+  const method = (options.method || 'GET').toUpperCase();
+  const csrfToken = getCookie('XSRF-TOKEN') || (typeof window !== 'undefined' ? window.__CSRF_TOKEN__ : null);
+  if (csrfToken && !['GET', 'HEAD', 'OPTIONS'].includes(method)) {
+    defaultHeaders['X-CSRF-Token'] = csrfToken;
+  }
 
   const config = {
     ...options,
@@ -20,6 +30,10 @@ async function request(endpoint, options = {}) {
 
   const response = await fetch(`${API_BASE}${endpoint}`, config);
   const data = await response.json().catch(() => ({}));
+
+  if (data && data.csrfToken && typeof window !== 'undefined') {
+    window.__CSRF_TOKEN__ = data.csrfToken;
+  }
 
   if (!response.ok) {
     const error = new Error(data.message || `HTTP ${response.status}: Request failed`);
@@ -38,6 +52,9 @@ export const api = {
     login: (credentials) => request('/auth/login', { method: 'POST', body: credentials }),
     logout: () => request('/auth/logout', { method: 'POST' }),
     getMe: () => request('/auth/me', { method: 'GET' }),
+    getCsrfToken: () => request('/auth/csrf-token', { method: 'GET' }),
+    verifyEmail: (token) => request('/auth/verify-email', { method: 'POST', body: { token } }),
+    resendVerification: (email) => request('/auth/resend-verification', { method: 'POST', body: { email } }),
     forgotPassword: (email) => request('/auth/forgot-password', { method: 'POST', body: { email } }),
     resetPassword: (payload) => request('/auth/reset-password', { method: 'POST', body: payload }),
   },
@@ -53,6 +70,7 @@ export const api = {
     update: (id, updates) => request(`/listings/${id}`, { method: 'PATCH', body: updates }),
     submitEvidence: (id, evidenceData) => request(`/listings/${id}/evidence`, { method: 'POST', body: evidenceData }),
     getMyListings: () => request('/listings/seller/me', { method: 'GET' }),
+    report: (id, payload) => request(`/listings/${id}/report`, { method: 'POST', body: payload }),
   },
 
   // Buyer & Interaction Features

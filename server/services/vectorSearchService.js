@@ -1,9 +1,32 @@
 const Listing = require('../models/Listing');
+const { OllamaEmbeddings } = require('@langchain/ollama');
+
+const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434';
+const OLLAMA_EMBED_MODEL = process.env.OLLAMA_EMBED_MODEL || 'nomic-embed-text';
+
+let ollamaEmbedderInstance = null;
+
+/**
+ * Returns or initializes the LangChain OllamaEmbeddings client
+ */
+function getOllamaEmbedder() {
+  if (!ollamaEmbedderInstance) {
+    try {
+      ollamaEmbedderInstance = new OllamaEmbeddings({
+        baseUrl: OLLAMA_BASE_URL,
+        model: OLLAMA_EMBED_MODEL,
+      });
+    } catch (e) {
+      ollamaEmbedderInstance = null;
+    }
+  }
+  return ollamaEmbedderInstance;
+}
 
 /**
  * Creates a normalized deterministic embedding vector from text.
  * Used for storing embeddings and calculating cosine similarity when
- * Ollama or Atlas Vector Search daemon is operating in local/hybrid mode.
+ * running in local test mode, offline environments, or fallback scenarios.
  */
 function generateLocalEmbedding(text, dimensions = 64) {
   const normalized = (text || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ');
@@ -32,6 +55,31 @@ function generateLocalEmbedding(text, dimensions = 64) {
 }
 
 /**
+ * Generates an embedding vector using LangChain OllamaEmbeddings if available,
+ * gracefully falling back to deterministic local unit embedding.
+ */
+async function getEmbedding(text, dimensions = 64) {
+  const embedder = getOllamaEmbedder();
+  if (embedder) {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 800);
+      const vector = await Promise.race([
+        embedder.embedQuery(text),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Embedding timeout')), 800)),
+      ]);
+      clearTimeout(timeoutId);
+      if (Array.isArray(vector) && vector.length > 0) {
+        return vector;
+      }
+    } catch (err) {
+      // Gracefully fall back to deterministic unit embedding
+    }
+  }
+  return generateLocalEmbedding(text, dimensions);
+}
+
+/**
  * Calculates cosine similarity between two unit vectors.
  */
 function cosineSimilarity(vecA, vecB) {
@@ -46,7 +94,7 @@ function cosineSimilarity(vecA, vecB) {
 /**
  * Semantic product discovery:
  * Combines vector search with STRICT hard budget and specification constraints.
- * Rule: High similarity score CANNOT override the buyer's hard budget limit!
+ * CRITICAL RULE: High similarity score CANNOT override the buyer's hard budget limit!
  */
 async function searchListingsSemantic({
   query,
@@ -56,7 +104,7 @@ async function searchListingsSemantic({
   minRamGb,
   limit = 5,
 }) {
-  const queryVector = generateLocalEmbedding(query);
+  const queryVector = await getEmbedding(query);
 
   // Auto-detect category from query terms if not explicitly passed
   let targetCategory = category;
@@ -119,7 +167,11 @@ async function searchListingsSemantic({
         { $unwind: '$seller' },
       ];
 
-      candidates = await Listing.aggregate(atlasPipeline);
+      const rawAtlasCandidates = await Listing.aggregate(atlasPipeline);
+      // Re-verify hard budget strictly in memory as secondary guard
+      candidates = rawAtlasCandidates.filter((item) => {
+        return !budget || item.price <= Number(budget);
+      });
       isAtlasSearchUsed = true;
     }
   } catch (atlasErr) {
@@ -136,7 +188,7 @@ async function searchListingsSemantic({
 
     const scored = rawListings.map((item) => {
       let sim = 0;
-      if (item.embedding && item.embedding.length > 0) {
+      if (item.embedding && item.embedding.length > 0 && item.embedding.length === queryVector.length) {
         sim = cosineSimilarity(queryVector, item.embedding);
       } else {
         // Fallback text match score
@@ -175,6 +227,7 @@ async function searchListingsSemantic({
 }
 
 module.exports = {
+  getEmbedding,
   generateLocalEmbedding,
   cosineSimilarity,
   searchListingsSemantic,

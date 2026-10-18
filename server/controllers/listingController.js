@@ -2,6 +2,8 @@ const { z } = require('zod');
 const Listing = require('../models/Listing');
 const Specification = require('../models/Specification');
 const PrivateEvidence = require('../models/PrivateEvidence');
+const ModerationEvent = require('../models/ModerationEvent');
+const { getEmbedding } = require('../services/vectorSearchService');
 
 const createListingSchema = z.object({
   title: z.string().min(5, 'Title must be at least 5 characters'),
@@ -124,7 +126,7 @@ exports.getListingById = async (req, res, next) => {
 
     // Exclude suspended and sold items from non-owners and non-moderators
     const isOwner = req.user && req.user._id.toString() === listing.sellerId._id.toString();
-    const isModerator = req.user && req.user.role === 'moderator';
+    const isModerator = req.user && req.user.role === 'moderator' && req.user.isStaffAssigned;
 
     if (listing.status !== 'active' && !isOwner && !isModerator) {
       return res.status(404).json({
@@ -132,6 +134,12 @@ exports.getListingById = async (req, res, next) => {
         message: 'This listing is no longer available.',
         listingStatus: listing.status,
       });
+    }
+
+    // STRICT PRIVACY RULE: Seller email must never leak to public buyers
+    const listingObj = listing.toObject();
+    if (!isOwner && !isModerator && listingObj.sellerId) {
+      delete listingObj.sellerId.email;
     }
 
     // Fetch official manufacturer specification to support side-by-side 3-way comparison
@@ -165,7 +173,7 @@ exports.getListingById = async (req, res, next) => {
 
     return res.status(200).json({
       success: true,
-      listing,
+      listing: listingObj,
       officialSpecification: officialSpec || null,
       evidence: evidenceInfo,
     });
@@ -179,11 +187,15 @@ exports.createListing = async (req, res, next) => {
   try {
     const validatedData = createListingSchema.parse(req.body);
 
+    const textToEmbed = `${validatedData.title} ${validatedData.description} ${validatedData.brand} ${validatedData.modelName} ${validatedData.category}`;
+    const embedding = await getEmbedding(textToEmbed);
+
     const newListing = new Listing({
       ...validatedData,
       sellerId: req.user._id,
       status: 'active',
       evidenceStatus: 'none',
+      embedding,
     });
 
     await newListing.save();
@@ -290,6 +302,49 @@ exports.getMyListings = async (req, res, next) => {
       success: true,
       count: listings.length,
       listings,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const reportListingSchema = z.object({
+  reason: z.string().min(5, 'Report reason must be at least 5 characters'),
+  details: z.string().optional(),
+});
+
+// POST /api/listings/:id/report - Report suspicious listing or inconsistency
+exports.reportListing = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { reason, details } = reportListingSchema.parse(req.body);
+
+    const listing = await Listing.findById(id);
+    if (!listing) {
+      return res.status(404).json({ success: false, message: 'Listing not found.' });
+    }
+
+    listing.reportCount = (listing.reportCount || 0) + 1;
+    if (listing.reportCount >= 3 && listing.status === 'active') {
+      listing.evidenceStatus = 'flagged';
+    }
+    await listing.save();
+
+    // Log moderation audit event
+    await ModerationEvent.create({
+      listingId: listing._id,
+      moderatorId: req.user._id,
+      action: 'inconsistency_noted',
+      reason: `Community report: ${reason}`,
+      previousStatus: listing.status,
+      newStatus: listing.status,
+      notes: details || 'Reported by user for review.',
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: 'Listing report submitted successfully. Moderation team has been notified.',
+      reportCount: listing.reportCount,
     });
   } catch (error) {
     next(error);

@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { api } from '../services/api';
+import { useAuth } from '../context/AuthContext';
 import {
   Sparkles,
   X,
@@ -16,6 +17,7 @@ import {
 } from 'lucide-react';
 
 export const ComparisonAgentChat = ({ isOpen, onClose, onSelectListing }) => {
+  const { user } = useAuth();
   const [query, setQuery] = useState('Compare three coding laptops under my budget');
   const [budget, setBudget] = useState(900);
   const [loading, setLoading] = useState(false);
@@ -28,6 +30,11 @@ export const ComparisonAgentChat = ({ isOpen, onClose, onSelectListing }) => {
   const handleRunAgent = async (e) => {
     if (e) e.preventDefault();
     if (!query.trim()) return;
+
+    if (!user) {
+      setError('Please log in or create an account to use the protected Comparison Agent.');
+      return;
+    }
 
     setLoading(true);
     setError(null);

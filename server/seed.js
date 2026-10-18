@@ -11,6 +11,8 @@ const ModerationEvent = require('./models/ModerationEvent');
 const DocumentAndRun = require('./models/DocumentAndRun');
 const { generateLocalEmbedding } = require('./services/vectorSearchService');
 
+const Session = require('./models/Session');
+
 const MONGO_URI = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/preowned_tech_companion';
 
 async function seedDatabase() {
@@ -21,6 +23,7 @@ async function seedDatabase() {
 
     await Promise.all([
       User.deleteMany({}),
+      Session.deleteMany({}),
       Listing.deleteMany({}),
       Specification.deleteMany({}),
       PrivateEvidence.deleteMany({}),
@@ -602,6 +605,18 @@ async function seedDatabase() {
       buyerNotes: 'Looking forward to inspecting the MacBook. Will bring a USB drive to run CoconutBattery.',
       status: 'confirmed',
       sellerNotes: 'Confirmed! I will have the device charged to 100% so you can run all diagnostic checks.',
+    });
+
+    await Viewing.create({
+      listingId: listingThinkpad._id,
+      buyerId: buyer._id,
+      sellerId: seller2._id,
+      requestedDate: new Date(Date.now() + 86400 * 1000 * 3),
+      timeSlot: '11:00 - 12:00',
+      locationType: 'police_station_safe_zone',
+      locationDetails: 'Official Safe Exchange Zone',
+      buyerNotes: 'Requesting a physical check on battery life.',
+      status: 'requested',
     });
 
     await ModerationEvent.create({

@@ -136,6 +136,13 @@ exports.askQuestion = async (req, res, next) => {
       return res.status(404).json({ success: false, message: 'Listing not found.' });
     }
 
+    if (listing.status === 'suspended') {
+      return res.status(400).json({
+        success: false,
+        message: 'Inquiry Blocked: This listing has been suspended for safety/moderation review.',
+      });
+    }
+
     if (listing.sellerId.toString() === req.user._id.toString()) {
       return res.status(400).json({
         success: false,
@@ -260,10 +267,11 @@ exports.getMyInquiries = async (req, res, next) => {
       $or: [{ buyerId: req.user._id }, { sellerId: req.user._id }],
     };
 
+    // STRICT PRIVACY: Never leak buyer or seller email addresses over in-app messaging
     const threads = await Question.find(query)
-      .populate('buyerId', 'name email')
-      .populate('sellerId', 'name email')
-      .populate('listingId', 'title price images')
+      .populate('buyerId', 'name reputationScore')
+      .populate('sellerId', 'name reputationScore verifiedSalesCount')
+      .populate('listingId', 'title price images status')
       .sort({ lastMessageAt: -1 })
       .lean();
 
@@ -338,10 +346,11 @@ exports.getMyViewings = async (req, res, next) => {
       $or: [{ buyerId: req.user._id }, { sellerId: req.user._id }],
     };
 
+    // STRICT PRIVACY: Never leak buyer or seller email in viewing bookings
     const viewings = await Viewing.find(query)
       .populate('listingId', 'title price images status')
-      .populate('buyerId', 'name email')
-      .populate('sellerId', 'name email')
+      .populate('buyerId', 'name reputationScore')
+      .populate('sellerId', 'name reputationScore verifiedSalesCount')
       .sort({ requestedDate: 1 })
       .lean();
 
@@ -376,10 +385,29 @@ exports.updateViewingStatus = async (req, res, next) => {
 
     const isBuyer = viewing.buyerId.toString() === req.user._id.toString();
     const isSeller = viewing.sellerId.toString() === req.user._id.toString();
-    const isModerator = req.user.role === 'moderator';
+    const isModerator = req.user.role === 'moderator' && req.user.isStaffAssigned;
 
     if (!isBuyer && !isSeller && !isModerator) {
       return res.status(403).json({ success: false, message: 'Unauthorized.' });
+    }
+
+    // Role-specific transition rules
+    if (isBuyer && !isSeller && !isModerator) {
+      if (status !== 'cancelled') {
+        return res.status(403).json({
+          success: false,
+          message: 'Buyers are only authorized to cancel viewing requests. Confirmations must be made by the seller.',
+        });
+      }
+    }
+
+    if (isSeller && !isModerator) {
+      if (!['confirmed', 'declined', 'completed'].includes(status)) {
+        return res.status(403).json({
+          success: false,
+          message: 'Sellers can only confirm, decline, or complete viewing appointments.',
+        });
+      }
     }
 
     viewing.status = status;

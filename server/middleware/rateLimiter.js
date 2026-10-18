@@ -11,6 +11,28 @@ const loginLimiter = rateLimit({
   },
 });
 
+const verificationLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    message: 'Too many email verification attempts. Please wait 15 minutes.',
+  },
+});
+
+const passwordResetLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    message: 'Too many password reset requests. Please wait 15 minutes.',
+  },
+});
+
 const contactLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 30, // 30 viewing or message requests per IP
@@ -19,6 +41,17 @@ const contactLimiter = rateLimit({
   message: {
     success: false,
     message: 'Too many contact/viewing requests submitted. Please slow down.',
+  },
+});
+
+const reportLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    message: 'Too many listing report submissions. Please wait before submitting more reports.',
   },
 });
 
@@ -35,6 +68,9 @@ const aiAgentLimiter = rateLimit({
 
 module.exports = {
   loginLimiter,
+  verificationLimiter,
+  passwordResetLimiter,
   contactLimiter,
+  reportLimiter,
   aiAgentLimiter,
 };

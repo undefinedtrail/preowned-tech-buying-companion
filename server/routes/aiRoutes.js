@@ -4,18 +4,18 @@ const aiController = require('../controllers/aiController');
 const { optionalAuth, authenticate } = require('../middleware/auth');
 const { aiAgentLimiter } = require('../middleware/rateLimiter');
 
-// Comparison Agent - multi-step discovery and inspection
+// Comparison Agent - multi-step discovery and inspection (Protected Member Feature)
 router.post(
   '/comparison-agent',
-  optionalAuth,
+  authenticate,
   aiAgentLimiter,
   aiController.runComparisonAgent
 );
 
-// Specification RAG - answers compatibility and upgrade questions
+// Specification RAG - answers compatibility and upgrade questions (Protected Member Feature)
 router.post(
   '/buyer-chat',
-  optionalAuth,
+  authenticate,
   aiAgentLimiter,
   aiController.buyerChatRAG
 );

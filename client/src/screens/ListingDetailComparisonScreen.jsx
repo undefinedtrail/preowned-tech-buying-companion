@@ -70,6 +70,11 @@ export const ListingDetailComparisonScreen = ({ listingId, onBack, initialTab = 
     if (e) e.preventDefault();
     if (!ragQuestion.trim()) return;
 
+    if (!user) {
+      alert('Please log in to use the AI Specification Assistant.');
+      return;
+    }
+
     setRagLoading(true);
     try {
       const res = await api.ai.buyerChatRAG(listingId, ragQuestion);

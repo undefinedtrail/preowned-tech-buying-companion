@@ -5,7 +5,14 @@ const PrivateEvidence = require('../models/PrivateEvidence');
 const DocumentAndRun = require('../models/DocumentAndRun');
 const { searchListingsSemantic } = require('./vectorSearchService');
 
-// Ollama Base configuration
+// LangChain JS Architecture Imports
+const { ChatOllama } = require('@langchain/ollama');
+const { PromptTemplate } = require('@langchain/core/prompts');
+const { StringOutputParser } = require('@langchain/core/output_parsers');
+const { RecursiveCharacterTextSplitter } = require('langchain/text_splitter');
+const { Document } = require('@langchain/core/documents');
+
+// Configuration
 const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434';
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'llama3';
 
@@ -15,7 +22,7 @@ const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'llama3';
 async function checkOllamaAvailability() {
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 1200);
+    const timeoutId = setTimeout(() => controller.abort(), 1000);
     const res = await fetch(`${OLLAMA_BASE_URL}/api/tags`, {
       signal: controller.signal,
     });
@@ -27,27 +34,54 @@ async function checkOllamaAvailability() {
 }
 
 /**
- * Helper to call Ollama generate API
+ * Instantiates the LangChain ChatOllama model with timeout controls
  */
-async function callOllama(prompt, systemPrompt = '') {
-  try {
-    const res = await fetch(`${OLLAMA_BASE_URL}/api/generate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: OLLAMA_MODEL,
-        prompt,
-        system: systemPrompt,
-        stream: false,
-      }),
-    });
-    if (!res.ok) throw new Error(`Ollama returned status ${res.status}`);
-    const data = await res.json();
-    return data.response;
-  } catch (err) {
-    console.warn(`[AI Service] Ollama call failed (${err.message}). Using resilient RAG reasoning engine.`);
-    return null;
+function getLangChainChatModel() {
+  return new ChatOllama({
+    baseUrl: OLLAMA_BASE_URL,
+    model: OLLAMA_MODEL,
+    temperature: 0.2,
+  });
+}
+
+/**
+ * Helper: Chunk manual excerpts into LangChain Document chunks
+ * using RecursiveCharacterTextSplitter for precision RAG
+ */
+async function chunkSpecificationManuals(specification) {
+  if (!specification || !specification.curatedManualExcerpts || specification.curatedManualExcerpts.length === 0) {
+    return [];
   }
+
+  const splitter = new RecursiveCharacterTextSplitter({
+    chunkSize: 250,
+    chunkOverlap: 40,
+  });
+
+  const docs = [];
+  for (const item of specification.curatedManualExcerpts) {
+    const fullText = `[${specification.brand} ${specification.modelName} Official Manual] ${item.sectionTitle}: ${item.excerpt}`;
+    const chunks = await splitter.splitText(fullText);
+
+    chunks.forEach((chunk, idx) => {
+      docs.push(
+        new Document({
+          pageContent: chunk,
+          metadata: {
+            brand: specification.brand,
+            modelName: specification.modelName,
+            sourceDoc: item.sourceDoc,
+            sectionTitle: item.sectionTitle,
+            pageNumber: item.pageNumber,
+            chunkIndex: idx,
+            sourceType: 'manufacturer_specification',
+          },
+        })
+      );
+    });
+  }
+
+  return docs;
 }
 
 /**
@@ -78,6 +112,7 @@ async function agentFindListings(needs, budget) {
 /**
  * STEP 2 of Purposeful Agent Workflow:
  * compareSpecifications(ids, requirements) -> supported differences vs manufacturer specs
+ * Uses LangChain document chunking and official manuals
  */
 async function agentCompareSpecifications(listingIds, requirements) {
   const start = Date.now();
@@ -85,12 +120,19 @@ async function agentCompareSpecifications(listingIds, requirements) {
 
   const comparisons = [];
   const citedSources = [];
+  const allChunkDocs = [];
 
   for (const item of listings) {
     const officialSpec = await Specification.findOne({
       brand: new RegExp(`^${item.brand}$`, 'i'),
       modelName: new RegExp(`^${item.modelName}$`, 'i'),
     }).lean();
+
+    // Chunk and index specification manual excerpts via LangChain
+    if (officialSpec) {
+      const chunks = await chunkSpecificationManuals(officialSpec);
+      allChunkDocs.push(...chunks);
+    }
 
     const ramInfo = {
       declared: `${item.structuredSpecs?.ramGb || 'N/A'}GB ${item.structuredSpecs?.ramType || ''}`,
@@ -157,12 +199,14 @@ async function agentCompareSpecifications(listingIds, requirements) {
     status: 'success',
     comparisons,
     citedSources,
+    manualChunksExamined: allChunkDocs.length,
   };
 }
 
 /**
  * STEP 3 of Purposeful Agent Workflow:
  * inspectDisclosures(ids) -> surfaces defects, missing proof, and battery health gaps
+ * Strictly sanitizes private evidence so serial numbers NEVER enter context!
  */
 async function agentInspectDisclosures(listingIds) {
   const start = Date.now();
@@ -259,7 +303,7 @@ async function agentInspectDisclosures(listingIds) {
 
 /**
  * Executes the Complete 3-Step Comparison Agent Workflow
- * For "Compare three coding laptops under my budget":
+ * Using LangChain LCEL Runnable Pipelines:
  * Step 1: findListings(needs, budget) -> candidates
  * Step 2: compareSpecifications(ids, requirements) -> supported differences
  * Step 3: inspectDisclosures(ids) -> defects and missing proof
@@ -274,7 +318,7 @@ async function runComparisonAgent({ userQuery, budget, userId }) {
   const candidates = step1.candidates || [];
 
   if (candidates.length === 0) {
-    const runRecord = await DocumentAndRun.create({
+    await DocumentAndRun.create({
       traceId,
       userId: userId || null,
       userQuery,
@@ -351,25 +395,45 @@ async function runComparisonAgent({ userQuery, budget, userId }) {
     };
   });
 
-  // Check if Ollama is available for LLM synthesis; fallback to deterministic RAG summary
-  const isOllamaUp = await checkOllamaAvailability();
+  // Construct LangChain PromptTemplate for Agent Trade-Off Synthesis
+  const promptTemplate = PromptTemplate.fromTemplate(`
+You are the Preowned Tech Buying Companion Agent.
+User Query: "{userQuery}" (Strict Budget Cap: \${budget})
+
+Examined Candidate Listings:
+{candidatesJson}
+
+Step 2 Specification Comparison:
+{specJson}
+
+Step 3 Condition Disclosures & Gap Audit:
+{inspectionJson}
+
+Instructions:
+1. Provide a concise, structured 3-part trade-off analysis matching the buyer's needs under their strict budget.
+2. Explicitly highlight if the cheapest candidate has missing battery disclosure and compare it against more complete options (highlight potential hidden replacement costs of $80-$150).
+3. Emphasize: "A seller claim is not a manufacturer guarantee."
+4. Do not certify authenticity and do not book viewings autonomously.
+`);
+
   let aiSummary = '';
+  const isOllamaUp = await checkOllamaAvailability();
 
   if (isOllamaUp) {
-    const prompt = `You are the Preowned Tech Buying Companion Agent.
-User Query: "${userQuery}" (Budget: $${budget})
-Candidates Examined:
-${JSON.stringify(recommendations, null, 2)}
-Inspections:
-${JSON.stringify(step3.inspections, null, 2)}
-
-Provide a concise 3-paragraph analysis:
-1. Trade-offs between the candidates matching the user's specific use case.
-2. Explicitly highlight if the cheapest candidate has missing battery disclosure and compare it against more complete options.
-3. Remind the buyer that seller claims are not manufacturer guarantees and state the recommended questions to ask.
-Do not certify authenticity. Do not book viewings.`;
-
-    aiSummary = await callOllama(prompt, 'You are an objective tech buying assistant.');
+    try {
+      const llm = getLangChainChatModel();
+      // LangChain LCEL Sequence: prompt -> llm -> StringOutputParser
+      const chain = promptTemplate.pipe(llm).pipe(new StringOutputParser());
+      aiSummary = await chain.invoke({
+        userQuery,
+        budget: budget || 'Unlimited',
+        candidatesJson: JSON.stringify(recommendations, null, 2),
+        specJson: JSON.stringify(step2.comparisons, null, 2),
+        inspectionJson: JSON.stringify(step3.inspections, null, 2),
+      });
+    } catch (err) {
+      console.warn(`[AI Service] LangChain chain invocation failed: ${err.message}. Using deterministic RAG engine.`);
+    }
   }
 
   if (!aiSummary) {
@@ -413,13 +477,14 @@ Remember: **A seller claim is not a manufacturer guarantee.** Always verify seri
     recommendations,
     suggestedPrepurchaseQuestions: step3.prepurchaseQuestions || [],
     tradeoffAnalysis: aiSummary,
-    guardrailNotice: 'Confirmation Gate: The agent cannot autonomously contact sellers or book viewings. Please use the buttons below to confirm and initiate inquiries manually.',
+    guardrailNotice: 'Confirmation Gate Enforced: The agent cannot autonomously contact sellers or book viewings without explicit user confirmation.',
   };
 }
 
 /**
  * Specification RAG:
- * Answers compatibility and upgrade questions using curated manuals and sanitized disclosures.
+ * Uses LangChain document chunking (RecursiveCharacterTextSplitter) on curated manuals
+ * and evaluates compatibility and upgrade questions.
  * Enforces distinction between manufacturer guarantees and unverified seller claims.
  * Serial numbers and receipts are NEVER injected into AI context!
  */
@@ -432,38 +497,63 @@ async function answerSpecificationQuestion({ listingId, question }) {
     modelName: new RegExp(`^${listing.modelName}$`, 'i'),
   }).lean();
 
-  const curatedExcerpts = officialSpec?.curatedManualExcerpts || [];
-  const manualContext = curatedExcerpts
-    .map((e) => `[Manual Excerpt - ${e.sourceDoc} - ${e.sectionTitle}]: "${e.excerpt}"`)
-    .join('\n');
+  // LangChain Chunking of Official Manuals
+  const manualChunks = await chunkSpecificationManuals(officialSpec);
 
+  // Filter or prioritize chunks relevant to the user's question
+  const qWords = question.toLowerCase().split(/\s+/).filter((w) => w.length > 2);
+  const relevantChunks = manualChunks.filter((doc) => {
+    const content = doc.pageContent.toLowerCase();
+    return qWords.some((w) => content.includes(w));
+  });
+
+  const selectedChunks = relevantChunks.length > 0 ? relevantChunks : manualChunks.slice(0, 3);
+  const manualContext = selectedChunks
+    .map((doc) => `[Source: ${doc.metadata.sourceDoc} | Section: ${doc.metadata.sectionTitle}] "${doc.pageContent}"`)
+    .join('\n\n');
+
+  // Sanitized seller context (no private evidence, no serials, no receipts)
   const sellerClaimContext = `[Seller Condition Claim]: Installed RAM: ${listing.structuredSpecs?.ramGb || 'N/A'}GB, CPU: ${listing.structuredSpecs?.cpu || 'N/A'}, Condition: ${listing.condition}, Seller Notes: "${listing.conditionDisclosures?.sellerConditionSummary || 'None'}"`;
 
-  // Explicitly Sanitize: Private evidence serial numbers and receipts are NOT included in AI context
-  const isOllamaUp = await checkOllamaAvailability();
+  // Build LangChain PromptTemplate for RAG
+  const ragPromptTemplate = PromptTemplate.fromTemplate(`
+You are the Preowned Tech Buying Companion Specification RAG Assistant.
+
+Manufacturer Official Manual Context:
+{manualContext}
+
+Seller Listing Declarations:
+{sellerClaimContext}
+
+Buyer Question: {question}
+
+STRICT SAFETY AND CITATION RULES:
+1. Clearly differentiate between "Manufacturer Guarantees" (supported by the cited official manual) and "Seller Declarations" (unverified seller claims).
+2. You MUST cite the specific section and document name for every manufacturer guarantee claim.
+3. You MUST include this explicit disclaimer: "Note: A seller claim is not a manufacturer guarantee."
+4. NEVER predict remaining device lifespan, battery cycles, or certify counterfeit authenticity.
+5. Provide a clear, objective recommendation based on the facts.
+`);
+
   let answer = '';
+  const isOllamaUp = await checkOllamaAvailability();
 
   if (isOllamaUp) {
-    const prompt = `Context:
-Manufacturer Guarantees:
-${manualContext || 'No official manual excerpts available for this model.'}
-
-Seller Declarations:
-${sellerClaimContext}
-
-Question from prospective buyer: "${question}"
-
-Instructions:
-1. Answer the question directly based on the manufacturer specifications and seller declarations.
-2. You MUST cite which statement comes from the manufacturer manual and which comes from seller declarations.
-3. Explicitly include this reminder: "Note: A seller claim is not a manufacturer guarantee."
-4. Do not certify authenticity or predict remaining device lifespan.`;
-
-    answer = await callOllama(prompt, 'You are a meticulous hardware specification expert.');
+    try {
+      const llm = getLangChainChatModel();
+      const ragChain = ragPromptTemplate.pipe(llm).pipe(new StringOutputParser());
+      answer = await ragChain.invoke({
+        manualContext: manualContext || 'No official manual excerpts indexed for this model.',
+        sellerClaimContext,
+        question,
+      });
+    } catch (err) {
+      console.warn(`[AI Service] LangChain RAG chain invocation failed: ${err.message}. Using deterministic RAG engine.`);
+    }
   }
 
   if (!answer) {
-    // Resilient deterministic RAG answer builder
+    // Resilient deterministic RAG answer builder grounded in the retrieved LangChain chunks
     const qLower = question.toLowerCase();
     let specificDetail = '';
 
@@ -500,6 +590,7 @@ The seller states: *"Installed ${listing.structuredSpecs?.ramGb || 'N/A'}GB RAM,
     question,
     answer,
     hasOfficialSpec: Boolean(officialSpec),
+    chunksRetrieved: selectedChunks.length,
     sourcesConsulted: [
       officialSpec ? `Official ${officialSpec.brand} Hardware Documentation` : 'Generic Specification Registry',
       `Seller Listing Disclosures (${listing.title})`,
@@ -513,4 +604,5 @@ module.exports = {
   agentFindListings,
   agentCompareSpecifications,
   agentInspectDisclosures,
+  chunkSpecificationManuals,
 };
