@@ -166,9 +166,28 @@ async function searchListingsSemantic({
         },
         { $unwind: '$seller' },
         {
-          $addFields: {
+          $project: {
+            title: 1,
+            description: 1,
+            category: 1,
+            brand: 1,
+            modelName: 1,
+            price: 1,
+            condition: 1,
+            structuredSpecs: 1,
+            conditionDisclosures: 1,
+            status: 1,
+            evidenceStatus: 1,
+            images: 1,
+            createdAt: 1,
+            sellerId: {
+              _id: '$seller._id',
+              name: '$seller.name',
+              reputationScore: '$seller.reputationScore',
+              verifiedSalesCount: '$seller.verifiedSalesCount',
+            },
             similarityScore: { $meta: 'vectorSearchScore' },
-            passesHardBudget: true,
+            passesHardBudget: { $literal: true },
           },
         },
       ];

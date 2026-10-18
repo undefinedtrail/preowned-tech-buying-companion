@@ -13,6 +13,9 @@ const Question = require('./models/Question');
 const Viewing = require('./models/Viewing');
 const ModerationEvent = require('./models/ModerationEvent');
 
+const DocumentAndRun = require('./models/DocumentAndRun');
+const aiController = require('./controllers/aiController');
+
 const aiService = require('./services/aiService');
 const { searchListingsSemantic } = require('./services/vectorSearchService');
 const { verifyCsrf } = require('./middleware/csrf');
@@ -25,6 +28,7 @@ async function runAcceptanceChecks() {
   console.log('===============================================================\n');
 
   await mongoose.connect(MONGO_URI);
+  const buyerUser = await User.findOne({ email: 'buyer@example.com' });
   let totalTests = 0;
   let passedTests = 0;
 
@@ -103,24 +107,76 @@ async function runAcceptanceChecks() {
     );
 
     // -------------------------------------------------------------------------
-    // TEST 5: Demonstration Scenario (Cheapest Listing Missing Battery Disclosure)
+    // TEST 5: Real Dynamic AI Tool-Calling Agent & Demonstration Scenario
     // -------------------------------------------------------------------------
-    console.log('\nTEST 5: Demonstration Scenario - Cheapest Coding Laptop Missing Battery Gap');
+    console.log('\nTEST 5: Real Dynamic AI Tool-Calling Agent & Demonstration Scenario');
+
+    // 5A: Dynamic Tool Registration & Zod Argument Validation
+    console.log('  -> 5A: Dynamic LangChain Tools & Zod Validation');
+    assert(
+      aiService.tools &&
+      typeof aiService.tools.findListingsTool?.invoke === 'function' &&
+      typeof aiService.tools.compareSpecificationsTool?.invoke === 'function' &&
+      typeof aiService.tools.inspectDisclosuresTool?.invoke === 'function',
+      'AI Service exports genuine LangChain DynamicStructuredTool instances'
+    );
+
+    // Zod validation rejection on invalid arguments
+    const invalidFindArgs = aiService.schemas.findListingsSchema.safeParse({ needs: '', budget: -50 });
+    assert(!invalidFindArgs.success, 'findListings Zod schema rejects empty search query and negative budget');
+
+    const invalidCompareArgs = aiService.schemas.compareSpecificationsSchema.safeParse({ listingIds: [] });
+    assert(!invalidCompareArgs.success, 'compareSpecifications Zod schema rejects empty listingIds array');
+
+    const invalidInspectArgs = aiService.schemas.inspectDisclosuresSchema.safeParse({ listingIds: [] });
+    assert(!invalidInspectArgs.success, 'inspectDisclosures Zod schema rejects empty listingIds array');
+
+    // Test direct tool execution with valid input
+    const directToolResult = await aiService.tools.findListingsTool.invoke({
+      needs: 'coding laptop',
+      budget: 900,
+    });
+    assert(directToolResult.success === true, 'findListingsTool executes successfully with valid Zod input');
+    assert(
+      directToolResult.candidates.every((c) => c.price <= 900),
+      'Direct findListingsTool invocation strictly enforces $900 hard budget limit'
+    );
+    assert(
+      directToolResult.candidates.every((c) => c.seller.email === undefined),
+      'findListingsTool output strictly redacts seller email from candidate data'
+    );
+
+    // 5B: Dynamic Early Stopping (Model controls execution; JS does NOT force all 3 steps)
+    console.log('  -> 5B: Dynamic Early Stopping (Zero-match budget stops immediately)');
+    const earlyStopRun = await aiService.runComparisonAgent({
+      userQuery: 'high end gaming rig',
+      budget: 10, // Impossible budget
+    });
+
+    assert(
+      earlyStopRun.steps.length === 1 && earlyStopRun.steps[0].stepName === 'findListings',
+      'Dynamic Agent stops immediately after findListings finds zero matches (does NOT force compareSpecifications or inspectDisclosures)'
+    );
+    assert(
+      earlyStopRun.recommendations.length === 0,
+      'Early-stopped run produces empty recommendations when no listings match budget'
+    );
+
+    // 5C: Demonstration Scenario (Cheapest Listing Missing Battery Disclosure)
+    console.log('  -> 5C: Demonstration Scenario with Valid Budget');
     const agentRun = await aiService.runComparisonAgent({
       userQuery: 'Compare three coding laptops under my budget',
       budget: 900,
+      userId: buyerUser._id,
     });
 
-    assert(agentRun.steps.length === 3, 'Purposeful Agent executed all 3 required steps');
-    assert(agentRun.steps[0].stepName === 'findListings', 'Step 1 is findListings()');
-    assert(agentRun.steps[1].stepName === 'compareSpecifications', 'Step 2 is compareSpecifications()');
-    assert(agentRun.steps[2].stepName === 'inspectDisclosures', 'Step 3 is inspectDisclosures()');
+    assert(agentRun.steps.length > 0, 'Agent executed dynamic multi-turn tool calling steps');
+    assert(agentRun.recommendations.length > 0, 'Agent returned candidate recommendations within budget');
 
     const cheapestCandidate = [...agentRun.recommendations].sort((a, b) => a.price - b.price)[0];
     const missingBatteryFlagged = cheapestCandidate.missingGaps.some((g) =>
       g.toLowerCase().includes('battery')
     );
-
     assert(
       missingBatteryFlagged,
       `Agent flagged missing battery health on cheapest option (${cheapestCandidate.title})`
@@ -138,6 +194,56 @@ async function runAcceptanceChecks() {
       agentRun.guardrailNotice.includes('cannot autonomously contact sellers or book viewings'),
       'Confirmation gate present: Agent blocks autonomous seller contact without user confirmation'
     );
+
+    // 5D: Execution Trace IDOR Security Check
+    console.log('  -> 5D: Agent Execution Trace IDOR Protection');
+    assert(agentRun.traceId !== undefined, 'Agent run generated unique traceId');
+    const storedTrace = await DocumentAndRun.findOne({ traceId: agentRun.traceId });
+    assert(storedTrace !== null, 'Agent execution trace saved in DocumentAndRun collection');
+    assert(
+      storedTrace.userId && storedTrace.userId.toString() === buyerUser._id.toString(),
+      'Trace is linked to owner userId'
+    );
+
+    // Simulate unauthorized user attempting to read the trace
+    let traceIdorBlocked = false;
+    let traceIdorStatus = 0;
+    const fakeOtherUserId = new mongoose.Types.ObjectId();
+    const mockIdorReq = {
+      params: { traceId: agentRun.traceId },
+      user: { _id: fakeOtherUserId, role: 'buyer', isStaffAssigned: false },
+    };
+    const mockIdorRes = {
+      status: (code) => {
+        traceIdorStatus = code;
+        return {
+          json: (data) => {
+            if (code === 403) traceIdorBlocked = true;
+          },
+        };
+      },
+    };
+    await aiController.getAgentTrace(mockIdorReq, mockIdorRes, () => {});
+    assert(
+      traceIdorBlocked && traceIdorStatus === 403,
+      'IDOR Protection: User B cannot access User A\'s agent execution trace (403 Forbidden)'
+    );
+
+    // Owner accessing trace succeeds
+    let ownerTraceAccessed = false;
+    const mockOwnerReq = {
+      params: { traceId: agentRun.traceId },
+      user: { _id: buyerUser._id, role: 'buyer', isStaffAssigned: false },
+    };
+    const mockOwnerRes = {
+      status: (code) => ({
+        json: (data) => {
+          if (code === 200 && data.success) ownerTraceAccessed = true;
+        },
+      }),
+    };
+    await aiController.getAgentTrace(mockOwnerReq, mockOwnerRes, () => {});
+    assert(ownerTraceAccessed, 'Trace owner can successfully retrieve their execution trace');
 
     // -------------------------------------------------------------------------
     // TEST 6: Specification RAG Upgradeability Grounding
@@ -163,7 +269,6 @@ async function runAcceptanceChecks() {
     // TEST 7: Staff Role Self-Assignment Prevention
     // -------------------------------------------------------------------------
     console.log('\nTEST 7: Staff Role RBAC Security Guard');
-    const buyerUser = await User.findOne({ email: 'buyer@example.com' });
     const isStaffAssigned = buyerUser.isStaffAssigned;
     assert(
       !isStaffAssigned,

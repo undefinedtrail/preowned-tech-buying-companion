@@ -96,6 +96,18 @@ exports.getAgentTrace = async (req, res, next) => {
       return res.status(404).json({ success: false, message: 'Agent execution trace not found.' });
     }
 
+    // IDOR Protection: If trace belongs to a user, enforce owner or staff moderator authorization
+    if (run.userId) {
+      const isOwner = req.user && req.user._id.toString() === run.userId.toString();
+      const isModerator = req.user && req.user.role === 'moderator' && req.user.isStaffAssigned;
+      if (!isOwner && !isModerator) {
+        return res.status(403).json({
+          success: false,
+          message: 'Unauthorized: You do not have permission to view this execution trace.',
+        });
+      }
+    }
+
     return res.status(200).json({
       success: true,
       trace: run,
