@@ -32,26 +32,35 @@ const verifyCsrf = (req, res, next) => {
     return next();
   }
 
-  // If cookie auth is used, CSRF token header is required
-  const csrfHeader =
-    req.headers['x-csrf-token'] ||
-    req.headers['x-xsrf-token'] ||
-    req.headers['csrf-token'];
+  if (hasCookieAuth) {
+    const csrfHeader =
+      req.headers['x-csrf-token'] ||
+      req.headers['x-xsrf-token'] ||
+      req.headers['csrf-token'];
 
-  const sessionCsrf = req.session ? req.session.csrfToken : (req.cookies ? req.cookies['XSRF-TOKEN'] : null);
+    // Require valid server-side session CSRF token
+    const sessionCsrf = req.session ? req.session.csrfToken : (req.cookies ? req.cookies['XSRF-TOKEN'] : null);
 
-  if (!csrfHeader) {
-    return res.status(403).json({
-      success: false,
-      message: 'CSRF Protection: Missing X-CSRF-Token header on state-changing request.',
-    });
-  }
+    if (!csrfHeader) {
+      return res.status(403).json({
+        success: false,
+        message: 'CSRF Protection: Missing X-CSRF-Token header on state-changing request.',
+      });
+    }
 
-  if (sessionCsrf && csrfHeader !== sessionCsrf) {
-    return res.status(403).json({
-      success: false,
-      message: 'CSRF Protection: Invalid CSRF token provided.',
-    });
+    if (!sessionCsrf) {
+      return res.status(403).json({
+        success: false,
+        message: 'CSRF Protection: No valid session CSRF token available for verification.',
+      });
+    }
+
+    if (csrfHeader !== sessionCsrf) {
+      return res.status(403).json({
+        success: false,
+        message: 'CSRF Protection: Invalid CSRF token provided.',
+      });
+    }
   }
 
   next();

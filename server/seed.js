@@ -9,7 +9,8 @@ const Question = require('./models/Question');
 const Viewing = require('./models/Viewing');
 const ModerationEvent = require('./models/ModerationEvent');
 const DocumentAndRun = require('./models/DocumentAndRun');
-const { generateLocalEmbedding } = require('./services/vectorSearchService');
+const SpecificationChunk = require('./models/SpecificationChunk');
+const { getEmbedding } = require('./services/vectorSearchService');
 
 const Session = require('./models/Session');
 
@@ -26,6 +27,7 @@ async function seedDatabase() {
       Session.deleteMany({}),
       Listing.deleteMany({}),
       Specification.deleteMany({}),
+      SpecificationChunk.deleteMany({}),
       PrivateEvidence.deleteMany({}),
       Shortlist.deleteMany({}),
       Question.deleteMany({}),
@@ -115,7 +117,7 @@ async function seedDatabase() {
           pageNumber: 38,
         },
       ],
-      embedding: generateLocalEmbedding('Lenovo ThinkPad T14 Gen 3 AMD Ryzen coding laptop upgradeable RAM'),
+      embedding: await getEmbedding('Lenovo ThinkPad T14 Gen 3 AMD Ryzen coding laptop upgradeable RAM'),
     });
 
     const macbookSpec = await Specification.create({
@@ -151,7 +153,7 @@ async function seedDatabase() {
           pageNumber: 12,
         },
       ],
-      embedding: generateLocalEmbedding('Apple MacBook Pro 14 M1 Pro 16GB coding video editing soldered RAM Retina'),
+      embedding: await getEmbedding('Apple MacBook Pro 14 M1 Pro 16GB coding video editing soldered RAM Retina'),
     });
 
     const dellSpec = await Specification.create({
@@ -187,7 +189,7 @@ async function seedDatabase() {
           pageNumber: 24,
         },
       ],
-      embedding: generateLocalEmbedding('Dell XPS 15 9520 Intel i7 OLED dual slot upgradeable RAM coding laptop'),
+      embedding: await getEmbedding('Dell XPS 15 9520 Intel i7 OLED dual slot upgradeable RAM coding laptop'),
     });
 
     const sonySpec = await Specification.create({
@@ -215,7 +217,7 @@ async function seedDatabase() {
           pageNumber: 8,
         },
       ],
-      embedding: generateLocalEmbedding('Sony Alpha A7 III Full Frame mirrorless camera photography video 4k'),
+      embedding: await getEmbedding('Sony Alpha A7 III Full Frame mirrorless camera photography video 4k'),
     });
 
     const steamDeckSpec = await Specification.create({
@@ -245,10 +247,34 @@ async function seedDatabase() {
           pageNumber: 4,
         },
       ],
-      embedding: generateLocalEmbedding('Valve Steam Deck OLED portable gaming handheld SteamOS 90Hz HDR'),
+      embedding: await getEmbedding('Valve Steam Deck OLED portable gaming handheld SteamOS 90Hz HDR'),
     });
 
     console.log('[Seeder] Created 5 official manufacturer specifications.');
+
+    // Index specification manual chunks into SpecificationChunk collection for Vector RAG
+    const allSpecs = [thinkpadSpec, macbookSpec, dellSpec, sonySpec, steamDeckSpec];
+    for (const spec of allSpecs) {
+      if (spec.curatedManualExcerpts) {
+        for (let idx = 0; idx < spec.curatedManualExcerpts.length; idx++) {
+          const excerptItem = spec.curatedManualExcerpts[idx];
+          const chunkText = `[${spec.brand} ${spec.modelName} Official Manual] ${excerptItem.sectionTitle}: ${excerptItem.excerpt}`;
+          const chunkEmb = await getEmbedding(chunkText);
+          await SpecificationChunk.create({
+            specificationId: spec._id,
+            brand: spec.brand,
+            modelName: spec.modelName,
+            sourceDoc: excerptItem.sourceDoc,
+            sectionTitle: excerptItem.sectionTitle,
+            pageNumber: excerptItem.pageNumber,
+            chunkIndex: idx,
+            pageContent: chunkText,
+            embedding: chunkEmb,
+          });
+        }
+      }
+    }
+    console.log('[Seeder] Indexed official specification manual chunks into SpecificationChunk collection.');
 
     // 3. Create Seed Listings (Crucial Demonstration Scenario)
     console.log('[Seeder] Populating test listings for demonstration scenario...');
@@ -292,7 +318,7 @@ async function seedDatabase() {
         'https://images.unsplash.com/photo-1588872657578-7efd1f1555ed?w=800&q=80',
         'https://images.unsplash.com/photo-1541807084-5c52b6b3adef?w=800&q=80',
       ],
-      embedding: generateLocalEmbedding('Lenovo ThinkPad T14 Gen 3 AMD Ryzen 5 coding programming laptop 16GB RAM 512GB SSD'),
+      embedding: await getEmbedding('Lenovo ThinkPad T14 Gen 3 AMD Ryzen 5 coding programming laptop 16GB RAM 512GB SSD'),
     });
 
     // LISTING 2: More expensive, fully disclosed with verified evidence
@@ -333,7 +359,7 @@ async function seedDatabase() {
         'https://images.unsplash.com/photo-1517336714731-489689fd1ca8?w=800&q=80',
         'https://images.unsplash.com/photo-1611186871348-b1ce696e52c9?w=800&q=80',
       ],
-      embedding: generateLocalEmbedding('Apple MacBook Pro 14 M1 Pro 16GB 512GB Space Gray coding light editing Xcode Retina'),
+      embedding: await getEmbedding('Apple MacBook Pro 14 M1 Pro 16GB 512GB Space Gray coding light editing Xcode Retina'),
     });
 
     // LISTING 3: Upgradeable Dell XPS 15
@@ -374,7 +400,7 @@ async function seedDatabase() {
         'https://images.unsplash.com/photo-1593642632823-8f785ba67e45?w=800&q=80',
         'https://images.unsplash.com/photo-1588872657578-7efd1f1555ed?w=800&q=80',
       ],
-      embedding: generateLocalEmbedding('Dell XPS 15 9520 Intel Core i7 32GB RAM 1TB SSD OLED coding Docker developer'),
+      embedding: await getEmbedding('Dell XPS 15 9520 Intel Core i7 32GB RAM 1TB SSD OLED coding Docker developer'),
     });
 
     // LISTING 4: High similarity but strictly OVER BUDGET ($1450 vs $900 budget)
@@ -408,7 +434,7 @@ async function seedDatabase() {
       evidenceStatus: 'verified',
       sellerId: seller1._id,
       images: ['https://images.unsplash.com/photo-1603302576837-37561b2e2302?w=800&q=80'],
-      embedding: generateLocalEmbedding('Razer Blade 16 RTX 4080 coding machine learning development high end'),
+      embedding: await getEmbedding('Razer Blade 16 RTX 4080 coding machine learning development high end'),
     });
 
     // LISTING 5: SOLD listing (Used to test that sold items are excluded from public search and viewing bookings)
@@ -434,7 +460,7 @@ async function seedDatabase() {
       evidenceStatus: 'verified',
       sellerId: seller2._id,
       images: ['https://images.unsplash.com/photo-1541807084-5c52b6b3adef?w=800&q=80'],
-      embedding: generateLocalEmbedding('Apple MacBook Air M2 8GB Midnight sold item'),
+      embedding: await getEmbedding('Apple MacBook Air M2 8GB Midnight sold item'),
     });
 
     // LISTING 6: SUSPENDED listing (Used to test that suspended items cannot receive new viewing bookings)
@@ -463,7 +489,7 @@ async function seedDatabase() {
       reportCount: 3,
       moderationNote: 'Suspended pending evidence review of reported shutter count tampering.',
       images: ['https://images.unsplash.com/photo-1516035069371-29a1b244cc32?w=800&q=80'],
-      embedding: generateLocalEmbedding('Sony Alpha A7 III full frame mirrorless camera photography'),
+      embedding: await getEmbedding('Sony Alpha A7 III full frame mirrorless camera photography'),
     });
 
     // LISTING 7: Valve Steam Deck OLED (Gaming category)
@@ -497,7 +523,7 @@ async function seedDatabase() {
       evidenceStatus: 'verified',
       sellerId: seller2._id,
       images: ['https://images.unsplash.com/photo-1550745165-9bc0b252726f?w=800&q=80'],
-      embedding: generateLocalEmbedding('Valve Steam Deck OLED portable gaming handheld PC dock Linux'),
+      embedding: await getEmbedding('Valve Steam Deck OLED portable gaming handheld PC dock Linux'),
     });
 
     console.log('[Seeder] Created 7 test listings with demonstration scenarios.');

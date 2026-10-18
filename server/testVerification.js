@@ -14,10 +14,12 @@ const Viewing = require('./models/Viewing');
 const ModerationEvent = require('./models/ModerationEvent');
 
 const DocumentAndRun = require('./models/DocumentAndRun');
+const SpecificationChunk = require('./models/SpecificationChunk');
 const aiController = require('./controllers/aiController');
 
 const aiService = require('./services/aiService');
-const { searchListingsSemantic } = require('./services/vectorSearchService');
+const vectorSearchService = require('./services/vectorSearchService');
+const { searchListingsSemantic } = vectorSearchService;
 const { verifyCsrf } = require('./middleware/csrf');
 
 const MONGO_URI = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/preowned_tech_companion';
@@ -378,6 +380,29 @@ async function runAcceptanceChecks() {
     });
     assert(csrfAccepted, 'Request with matching X-CSRF-Token header successfully passes CSRF validation');
 
+    // Simulate request with CSRF header BUT missing session token (must be rejected!)
+    let missingSessionRejected = false;
+    let missingSessionStatus = 0;
+    const mockReqMissingSessionCsrf = {
+      method: 'POST',
+      path: '/api/shortlists',
+      cookies: { token: 'mock-jwt-cookie' }, // no XSRF-TOKEN or session CSRF
+      headers: { 'x-csrf-token': 'arbitrary-csrf-token-without-session' },
+    };
+    const mockResMissingSession = {
+      status: (code) => {
+        missingSessionStatus = code;
+        return {
+          json: () => { missingSessionRejected = true; },
+        };
+      },
+    };
+    verifyCsrf(mockReqMissingSessionCsrf, mockResMissingSession, () => {});
+    assert(
+      missingSessionRejected && missingSessionStatus === 403,
+      'CSRF Protection blocks request with CSRF header when no valid session CSRF token exists (403 Forbidden)'
+    );
+
     // -------------------------------------------------------------------------
     // TEST 11: Privacy & Zero Seller Email Leakage
     // -------------------------------------------------------------------------
@@ -449,9 +474,9 @@ async function runAcceptanceChecks() {
     assert(comparisonRoute.route.stack.length >= 3, 'Comparison agent route is protected with authentication and rate limiting');
 
     // -------------------------------------------------------------------------
-    // TEST 15: LangChain Document Chunking & Manual Citation
+    // TEST 15: Vector-Based Specification Document Chunking & Atlas Storage
     // -------------------------------------------------------------------------
-    console.log('\nTEST 15: LangChain Specification Document Chunking');
+    console.log('\nTEST 15: Vector-Based Specification Document Chunking & Atlas Storage');
     const thinkpadSpec = await Specification.findOne({ brand: 'Lenovo' });
     const chunks = await aiService.chunkSpecificationManuals(thinkpadSpec);
 
@@ -459,10 +484,13 @@ async function runAcceptanceChecks() {
     assert(chunks[0].pageContent.length > 0, 'Document chunk contains verified text content');
     assert(chunks[0].metadata.sourceType === 'manufacturer_specification', 'Document chunk carries verified manufacturer_specification metadata');
 
+    const indexedChunksCount = await SpecificationChunk.countDocuments({ brand: 'Lenovo' });
+    assert(indexedChunksCount > 0, `SpecificationChunk collection stores ${indexedChunksCount} indexed vector chunks for Atlas Vector Search`);
+
     // -------------------------------------------------------------------------
-    // TEST 16: Unsupported Compatibility Answers & Graceful Missing-Data Response
+    // TEST 16: Vector-Based Specification RAG & Graceful Missing-Data Response
     // -------------------------------------------------------------------------
-    console.log('\nTEST 16: Unsupported Compatibility Answers & Missing-Data Response');
+    console.log('\nTEST 16: Vector-Based Specification RAG & Missing-Data Response');
     const dellLaptop = await Listing.findOne({ brand: 'Dell' });
     
     // 16a: Unsupported RAM capacity beyond maximum
@@ -472,11 +500,15 @@ async function runAcceptanceChecks() {
     });
     assert(
       unsupportedRamResponse.isSupported === false,
-      'RAG correctly flags 128GB RAM upgrade as unsupported on Dell XPS (Capped at 64GB max)'
+      'Vector RAG correctly flags 128GB RAM upgrade as unsupported on Dell XPS (Capped at 64GB max)'
     );
     assert(
       unsupportedRamResponse.answer.includes('UNSUPPORTED') || unsupportedRamResponse.answer.includes('64GB'),
-      'RAG explicitly cites manufacturer manual maximum ceiling of 64GB'
+      'Vector RAG explicitly cites manufacturer manual maximum ceiling of 64GB'
+    );
+    assert(
+      unsupportedRamResponse.toolExecution && unsupportedRamResponse.toolExecution.retrievalType === 'vectorSearch',
+      'RAG pipeline uses genuine vectorSearch retrieval over document chunks'
     );
 
     // 16b: Undocumented capability (Graceful Missing-Data Response)
@@ -490,11 +522,11 @@ async function runAcceptanceChecks() {
     );
     assert(
       missingDataResponse.gracefulMissingDataNotice !== null,
-      'RAG provides a structured gracefulMissingDataNotice for undocumented capabilities'
+      'Vector RAG provides a structured gracefulMissingDataNotice for undocumented capabilities'
     );
     assert(
-      missingDataResponse.toolExecution && missingDataResponse.toolExecution.toolName === 'specificationRAG',
-      'RAG response includes structured toolExecution status'
+      missingDataResponse.toolExecution && missingDataResponse.toolExecution.toolName === 'specificationVectorRAG',
+      'Vector RAG response includes structured specificationVectorRAG tool execution'
     );
 
     // -------------------------------------------------------------------------
@@ -587,6 +619,42 @@ async function runAcceptanceChecks() {
       modViolationBlocked && modViolationStatus === 403,
       'requireRole blocks moderator accounts lacking administrator staff assignment (403 Security Violation)'
     );
+
+    // -------------------------------------------------------------------------
+    // TEST 21: Production Vector Search & Offline Service Handling
+    // -------------------------------------------------------------------------
+    console.log('\nTEST 21: Production Vector Search & Offline Service Handling');
+    const originalEnv = process.env.NODE_ENV;
+    try {
+      process.env.NODE_ENV = 'production';
+      let prodEmbeddingThrew = false;
+      let prodEmbeddingStatus = 0;
+      try {
+        await vectorSearchService.getRealEmbedding('high performance coding laptop');
+      } catch (err) {
+        prodEmbeddingThrew = true;
+        prodEmbeddingStatus = err.status || 500;
+      }
+      assert(
+        prodEmbeddingThrew && prodEmbeddingStatus === 503,
+        'Production mode strictly rejects fake embeddings and throws 503 when Ollama is offline'
+      );
+
+      let prodSearchThrew = false;
+      let prodSearchStatus = 0;
+      try {
+        await vectorSearchService.searchListingsSemantic({ query: 'laptop', budget: 900 });
+      } catch (err) {
+        prodSearchThrew = true;
+        prodSearchStatus = err.status || 500;
+      }
+      assert(
+        prodSearchThrew && prodSearchStatus === 503,
+        'Production mode strictly rejects in-memory fallback and throws 503 when Atlas Vector Search is not configured'
+      );
+    } finally {
+      process.env.NODE_ENV = originalEnv;
+    }
 
     // Summary
     console.log('\n===============================================================');
