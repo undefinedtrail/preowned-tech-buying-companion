@@ -317,7 +317,6 @@ const compareSpecificationsTool = new DynamicStructuredTool({
 
     const comparisons = [];
     const citedSources = [];
-    let chunksExamined = 0;
 
     for (const item of listings) {
       const officialSpec = await Specification.findOne({
@@ -326,11 +325,7 @@ const compareSpecificationsTool = new DynamicStructuredTool({
       }).lean();
 
       if (officialSpec) {
-        await ensureSpecificationChunksIndexed(officialSpec);
-        const chunks = await chunkSpecificationManuals(officialSpec);
-        chunksExamined += chunks.length;
-
-        citedSources.push({
+          citedSources.push({
           sourceName: `${officialSpec.brand} ${officialSpec.modelName} Official Reference Manual`,
           sourceType: 'manufacturer_specification',
           listingId: item._id,
