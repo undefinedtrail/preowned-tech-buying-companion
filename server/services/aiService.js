@@ -529,13 +529,28 @@ Rules:
   ];
 
   const agentSteps = [];
+   const agentSteps = [];
   const allCitedSources = [];
   const candidateListingIds = [];
   const candidatesData = [];
   const specComparisons = [];
   const disclosureInspections = [];
-  let suggestedPrepurchaseQuestions = [];
+  const suggestedPrepurchaseQuestions = [];
+  const allowedIds = new Set(); // FIX 2: only IDs returned by findListings may be inspected
+  const failedChecks = []; // FIX 3: tools that threw an error
   let tradeoffAnalysis = '';
+  let agentMode = 'llm'; // FIX 6: says whether a real model or the scripted mock ran
+  let llmFailed = false;
+
+  // FIX 3: helper so failed or rejected tool calls are logged too
+  const failedStep = (name, input, message) => ({
+    stepNumber: agentSteps.length + 1,
+    stepName: name,
+    inputData: input,
+    outputSummary: message,
+    durationMs: 0,
+    status: 'failed',
+  });
 
   let llm;
   const isOllamaUp = await checkOllamaAvailability();
@@ -550,6 +565,7 @@ Rules:
       throw err;
     }
     // Test / offline environment uses an isolated mock at the LLM boundary
+    agentMode = 'mock'; // FIX 6
     llm = new TestMockChatModel();
   }
 
@@ -558,7 +574,16 @@ Rules:
   let iteration = 0;
   while (iteration < maxIterations) {
     iteration++;
-    const response = await llmWithTools.invoke(messages);
+
+    // FIX 8: timeout and error handling around the model call
+    let response;
+    try {
+      response = await llmWithTools.invoke(messages, { signal: AbortSignal.timeout(AGENT_TIMEOUT_MS) });
+    } catch (err) {
+      llmFailed = true;
+      agentSteps.push(failedStep('modelCall', {}, `Model call failed: ${err.message}`));
+      break;
+    }
     messages.push(response);
 
     // If the model did not request tool calls, it has finished and produced its final response
@@ -572,32 +597,72 @@ Rules:
       const tool = registeredTools[toolCall.name];
 
       if (!tool) {
+        const msg = `Tool '${toolCall.name}' is not recognized.`;
+        agentSteps.push(failedStep(toolCall.name, toolCall.args, msg)); // FIX 3
         messages.push(new ToolMessage({
           tool_call_id: toolCall.id,
           name: toolCall.name,
-          content: JSON.stringify({ error: `Tool '${toolCall.name}' is not recognized.` }),
+          content: JSON.stringify({ error: msg }),
         }));
         continue;
       }
 
-      // Application validates tool arguments with Zod schema
+      // FIX 1: the buyer's budget is forced by our code, the model cannot change it
       const args = toolCall.name === 'findListings'
         ? { ...toolCall.args, budget: budget || null }
         : toolCall.args;
-const validation = tool.schema.safeParse(args);
 
+      // Application validates tool arguments with Zod schema
+      const validation = tool.schema.safeParse(args);
       if (!validation.success) {
+        const msg = `Zod validation failed for ${toolCall.name}: ${validation.error.message}`;
+        agentSteps.push(failedStep(toolCall.name, toolCall.args, msg)); // FIX 3
         messages.push(new ToolMessage({
           tool_call_id: toolCall.id,
           name: toolCall.name,
-          content: JSON.stringify({ error: `Zod validation failed for ${toolCall.name}: ${validation.error.message}` }),
+          content: JSON.stringify({ error: msg }),
         }));
         continue;
+      }
+
+      // FIX 2: refuse listing IDs that findListings did not return in this run
+      if (toolCall.name !== 'findListings') {
+        const badIds = validation.data.listingIds.filter((id) => !allowedIds.has(String(id)));
+        if (allowedIds.size === 0 || badIds.length > 0) {
+          const msg = 'Invalid listing id(s). Only IDs returned by findListings in this run may be used. Call findListings first.';
+          agentSteps.push(failedStep(toolCall.name, validation.data, msg));
+          messages.push(new ToolMessage({
+            tool_call_id: toolCall.id,
+            name: toolCall.name,
+            content: JSON.stringify({ error: msg }),
+          }));
+          continue;
+        }
       }
 
       // Application executes the tool
       const stepStart = Date.now();
-      const toolResult = await tool.invoke(validation.data);
+      let toolResult;
+      try {
+        toolResult = await tool.invoke(validation.data);
+      } catch (err) {
+        // FIX 3: a tool error becomes an honest "failed" step, never a crash or a fake success
+        failedChecks.push(toolCall.name);
+        agentSteps.push({
+          stepNumber: agentSteps.length + 1,
+          stepName: toolCall.name,
+          inputData: validation.data,
+          outputSummary: `Tool error: ${err.message}`,
+          durationMs: Date.now() - stepStart,
+          status: 'failed',
+        });
+        messages.push(new ToolMessage({
+          tool_call_id: toolCall.id,
+          name: toolCall.name,
+          content: JSON.stringify({ error: `This check did not complete: ${err.message}` }),
+        }));
+        continue;
+      }
       const durationMs = Date.now() - stepStart;
 
       agentSteps.push({
@@ -609,11 +674,15 @@ const validation = tool.schema.safeParse(args);
         status: toolResult.success ? 'success' : 'failed',
       });
 
-      if (toolResult.candidateIds) {
-        candidateListingIds.push(...toolResult.candidateIds);
-      }
+      // FIX 2: remember allowed IDs (this also removes duplicates if findListings runs twice)
       if (toolResult.candidates) {
-        candidatesData.push(...toolResult.candidates);
+        for (const c of toolResult.candidates) {
+          if (!allowedIds.has(c._id)) {
+            allowedIds.add(c._id);
+            candidateListingIds.push(c._id);
+            candidatesData.push(c);
+          }
+        }
       }
       if (toolResult.comparisons) {
         specComparisons.push(...toolResult.comparisons);
@@ -637,53 +706,91 @@ const validation = tool.schema.safeParse(args);
     }
   }
 
-  // Synthesize recommendations based on dynamic tool outputs
-  let recommendations = [];
-  if (candidatesData.length > 0) {
-    recommendations = candidatesData.map((c) => {
-      const specComp = specComparisons.find((comp) => comp.listingId === c._id.toString());
-      const insp = disclosureInspections.find((i) => i.listingId === c._id.toString());
+  // Synthesize recommendations from the real tool outputs only
+  const cheapestId = candidatesData.length > 0
+    ? String([...candidatesData].sort((a, b) => a.price - b.price)[0]._id)
+    : null;
 
-      const pros = [];
-      const consAndTradeoffs = [];
+  const recommendations = candidatesData.map((c) => {
+    const specComp = specComparisons.find((comp) => comp.listingId === c._id.toString());
+    const insp = disclosureInspections.find((i) => i.listingId === c._id.toString());
 
-      if (specComp) {
-        if (specComp.ramInfo.isUpgradeable) {
-          pros.push(`RAM is upgradeable (${specComp.ramInfo.upgradeLimitText})`);
-        } else {
-          consAndTradeoffs.push('RAM is non-upgradeable (soldered)');
-        }
+    const pros = [];
+    const consAndTradeoffs = [];
+    const checksNotCompleted = []; // FIX 3: shows the buyer which checks did not run
+
+    if (specComp) {
+      if (specComp.ramInfo.isUpgradeable === null) {
+        // FIX 5: unknown is not the same as soldered
+        consAndTradeoffs.push('No manufacturer manual on file, so RAM upgradeability is unverified');
+      } else if (specComp.ramInfo.isUpgradeable) {
+        pros.push(`RAM is upgradeable (${specComp.ramInfo.upgradeLimitText})`);
+      } else {
+        consAndTradeoffs.push('RAM is non-upgradeable (soldered)');
       }
+    } else {
+      checksNotCompleted.push('specification comparison');
+    }
 
-      if (insp) {
-        if (insp.hasBatteryDisclosure) {
-          pros.push(`Battery health fully disclosed: ${c.conditionDisclosures?.batteryHealthPct || insp.hasBatteryDisclosure}%`);
-        } else {
-          consAndTradeoffs.push('WARNING: No battery health percentage or cycle count disclosed');
-        }
-        if (insp.scenarioNote) {
-          consAndTradeoffs.push(insp.scenarioNote);
-        }
+    if (insp) {
+      if (insp.hasBatteryDisclosure) {
+        // FIX 4: read the real numbers (this used to print "true%")
+        pros.push(
+          `Battery health disclosed: ${insp.batteryHealthPct}%` +
+            (insp.batteryCycleCount !== null && insp.batteryCycleCount !== undefined
+              ? ` (${insp.batteryCycleCount} cycles)`
+              : '')
+        );
       }
+      // FIX 5: warnings come from the real missing-information list (no false battery warning on cameras)
+      insp.missingGaps.forEach((gap) => consAndTradeoffs.push(gap));
+      if (insp.disclosedDefects && insp.disclosedDefects.length > 0) {
+        consAndTradeoffs.push(`Disclosed defects: ${insp.disclosedDefects.join(', ')}`);
+      }
+      // FIX 5: replaces the old scenarioNote that contained an invented repair cost
+      if (String(c._id) === cheapestId && insp.missingGaps.length > 0) {
+        consAndTradeoffs.push('Lowest-priced option, but key information is undisclosed');
+      }
+    } else {
+      checksNotCompleted.push('disclosure inspection');
+    }
 
-      return {
-        listingId: c._id,
-        title: c.title,
-        price: c.price,
-        similarityScore: c.similarityScore,
-        pros,
-        consAndTradeoffs,
-        missingGaps: insp?.missingGaps || [],
-      };
-    });
+    return {
+      listingId: c._id,
+      title: c.title,
+      price: c.price,
+      similarityScore: c.similarityScore,
+      pros,
+      consAndTradeoffs,
+      missingGaps: insp?.missingGaps || [],
+      checksNotCompleted,
+    };
+  });
 
-    if (!tradeoffAnalysis) {
-      const cheapest = [...candidatesData].sort((a, b) => a.price - b.price)[0];
-      const highestRated = [...candidatesData].sort((a, b) => (b.seller?.reputationScore || 0) - (a.seller?.reputationScore || 0))[0];
-
-      tradeoffAnalysis = `### AI Trade-Off Analysis for "${userQuery}"\n\n1. **Budget vs Transparency Trade-off**:\nThe lowest priced option is the **${cheapest.title}** ($${cheapest.price}). However, our disclosure audit flagged that **its battery health and cycle count are completely undisclosed**.\n\n2. **Verified Alternative**:\nThe **${highestRated.title}** ($${highestRated.price}) provides full disclosure and verified evidence.\n\n3. **Guarantees vs Declarations**:\n**A seller claim is not a manufacturer guarantee.** Always verify serial numbers and run local hardware diagnostics at a safe exchange zone.`;
+  // FIX 5 + FIX 8: the fallback text is built only from real findings, and it also covers "no candidates"
+  if (!tradeoffAnalysis || !String(tradeoffAnalysis).trim()) {
+    if (recommendations.length === 0) {
+      tradeoffAnalysis = llmFailed
+        ? 'The AI model did not respond, so no comparison could be made. Please try again.'
+        : `No active listings matched "${userQuery}" within your budget. Consider raising the budget or broadening the description.`;
+    } else {
+      const lines = recommendations.map((r) => {
+        const parts = [];
+        if (r.pros.length) parts.push(`positives: ${r.pros.join('; ')}`);
+        if (r.consAndTradeoffs.length) parts.push(`concerns: ${r.consAndTradeoffs.join('; ')}`);
+        if (r.checksNotCompleted.length) parts.push(`not checked: ${r.checksNotCompleted.join(', ')}`);
+        return `- ${r.title} ($${r.price}): ${parts.join(' | ') || 'no findings'}`;
+      });
+      tradeoffAnalysis = [
+        'The AI model did not give a final summary, so this only lists what the checks found.',
+        ...lines,
+        'A seller claim is not a manufacturer guarantee.',
+      ].join('\n');
     }
   }
+
+  // FIX 3: an honest status instead of always "completed"
+  const executionStatus = llmFailed || failedChecks.length > 0 ? 'partial' : 'completed';
 
   // Persist execution trace in DocumentAndRun
   await DocumentAndRun.create({
@@ -696,7 +803,7 @@ const validation = tool.schema.safeParse(args);
     candidateListingIds,
     recommendations,
     suggestedPrepurchaseQuestions,
-    executionStatus: 'completed',
+    executionStatus,
     totalDurationMs: Date.now() - totalStart,
   });
 
@@ -704,6 +811,12 @@ const validation = tool.schema.safeParse(args);
     traceId,
     userQuery,
     budget,
+    agentMode, // FIX 6
+    executionStatus,
+    incompleteChecks: failedChecks,
+    notice: agentMode === 'mock'
+      ? 'Ollama was not reachable, so a scripted test model produced this result.'
+      : undefined,
     steps: agentSteps,
     citedSources: allCitedSources,
     recommendations,
