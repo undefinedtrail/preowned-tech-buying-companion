@@ -354,16 +354,16 @@ const ramInfo = {
 };
       const cpuInfo = {
         declared: item.structuredSpecs?.cpu || 'N/A',
-        officialFamily: officialSpec?.officialSpecs?.cpuFamily || 'Standard OEM',
+        officialFamily: officialSpec?.officialSpecs?.cpuFamily || 'Not specified',
         tdp: officialSpec?.officialSpecs?.tdpWatts
           ? `${officialSpec.officialSpecs.tdpWatts}W TDP`
-          : 'Standard power profile',
+          : 'Not specified',
       };
 
       const displayInfo = {
-        resolution: item.structuredSpecs?.resolution || 'FHD',
-        panelType: officialSpec?.officialSpecs?.displaySpecs?.panelType || 'IPS',
-        refreshRate: officialSpec?.officialSpecs?.displaySpecs?.refreshRateHz || 60,
+        resolution: item.structuredSpecs?.resolution || 'Not specified',
+        panelType: officialSpec?.officialSpecs?.displaySpecs?.panelType || 'Not specified',
+        refreshRate: officialSpec?.officialSpecs?.displaySpecs?.refreshRateHz || null,
       };
 
       comparisons.push({
