@@ -340,17 +340,19 @@ const compareSpecificationsTool = new DynamicStructuredTool({
         claimText: `Seller claims: ${item.structuredSpecs?.ramGb || 'N/A'}GB RAM, ${item.structuredSpecs?.storageGb || 'N/A'}GB SSD, condition grade '${item.condition}'`,
       });
 
-      const ramInfo = {
-        declared: `${item.structuredSpecs?.ramGb || 'N/A'}GB ${item.structuredSpecs?.ramType || ''}`,
-        officialMax: officialSpec?.officialSpecs?.maxRamGb
-          ? `${officialSpec.officialSpecs.maxRamGb}GB`
-          : 'Manufacturer manual not found',
-        isUpgradeable: officialSpec?.officialSpecs?.ramUpgradeable ?? false,
-        upgradeLimitText: officialSpec?.officialSpecs?.ramUpgradeable
-          ? `Upgradable to ${officialSpec.officialSpecs.maxRamGb}GB (${officialSpec.officialSpecs.ramSlotsCount} SODIMM slots)`
-          : 'Soldered memory - Cannot be upgraded post-purchase',
-      };
-
+  const manualFound = Boolean(officialSpec?.officialSpecs);
+const ramInfo = {
+  declared: `${item.structuredSpecs?.ramGb || 'N/A'}GB ${item.structuredSpecs?.ramType || ''}`,
+  officialMax: officialSpec?.officialSpecs?.maxRamGb
+    ? `${officialSpec.officialSpecs.maxRamGb}GB`
+    : 'Manufacturer manual not found',
+  isUpgradeable: manualFound ? Boolean(officialSpec.officialSpecs.ramUpgradeable) : null,
+  upgradeLimitText: !manualFound
+    ? 'Unknown - no manufacturer manual on file'
+    : officialSpec.officialSpecs.ramUpgradeable
+      ? `Upgradable to ${officialSpec.officialSpecs.maxRamGb}GB (${officialSpec.officialSpecs.ramSlotsCount} SODIMM slots)`
+      : 'Soldered memory - Cannot be upgraded post-purchase',
+};
       const cpuInfo = {
         declared: item.structuredSpecs?.cpu || 'N/A',
         officialFamily: officialSpec?.officialSpecs?.cpuFamily || 'Standard OEM',
@@ -380,7 +382,7 @@ const compareSpecificationsTool = new DynamicStructuredTool({
 
     return {
       success: true,
-      summary: `Cross-referenced ${listings.length} devices against manufacturer manuals (${chunksExamined} manual chunks examined).`,
+      summary: `Cross-referenced ${listings.length} devices against manufacturer specifications.`,
       count: comparisons.length,
       comparisons,
       citedSources,
