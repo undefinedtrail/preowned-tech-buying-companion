@@ -528,7 +528,6 @@ Rules:
   ];
 
   const agentSteps = [];
-   const agentSteps = [];
   const allCitedSources = [];
   const candidateListingIds = [];
   const candidatesData = [];
