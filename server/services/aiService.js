@@ -23,7 +23,8 @@ const { Document } = require('@langchain/core/documents');
 
 // Configuration
 const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434';
-const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'llama3';
+const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'llama3.1';
+const AGENT_TIMEOUT_MS = Number(process.env.AGENT_TIMEOUT_MS) || 120000;
 
 /**
  * Checks if Ollama service is reachable
