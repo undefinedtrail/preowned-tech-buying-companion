@@ -253,7 +253,8 @@ async function ensureSpecificationChunksIndexed(specification) {
  */
 const findListingsSchema = z.object({
   needs: z.string().min(2, 'Search terms or requirements must be at least 2 characters').describe('Search terms or buyer use-case (e.g. coding laptop, 4K camera)'),
-  budget: z.number().positive('Budget must be greater than 0').optional().nullable().describe('Strict maximum budget in USD (hard price ceiling). High similarity CANNOT override this.'),
+  budget: z.number().positive('Budget must be greater than 0').optional().nullable().OLLAMA_MODEL=llama3
+
   category: z.enum(['laptops', 'cameras', 'smartphones', 'gaming', 'tablets', 'audio', 'smartwatches']).optional().describe('Product category'),
   minRamGb: z.number().positive().optional().describe('Minimum required RAM in GB'),
 });
