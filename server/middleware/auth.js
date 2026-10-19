@@ -2,13 +2,13 @@ const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const Session = require('../models/Session');
 
-   const getJwtSecret = () => {
-     const secret = process.env.JWT_SECRET;
-     if (!secret) {
-       throw new Error('JWT_SECRET environment variable must be set.');
-     }
-     return secret;
-   };
+const getJwtSecret = () => {
+  const secret = process.env.JWT_SECRET;
+  if (!secret) {
+    throw new Error('JWT_SECRET environment variable must be set.');
+  }
+  return secret;
+};
 
 /**
  * Authenticates requests using either server-side session cookies or Bearer JWT token.
@@ -75,7 +75,6 @@ const authenticate = async (req, res, next) => {
     return res.status(401).json({
       success: false,
       message: 'Authentication failed or session expired. Please re-authenticate.',
-      error: error.message,
     });
   }
 };

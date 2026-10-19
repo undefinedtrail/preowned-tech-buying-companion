@@ -1,4 +1,5 @@
 const Listing = require('../models/Listing');
+const { escapeRegex, exactCI } = require('../utils/escapeRegex');
 const SpecificationChunk = require('../models/SpecificationChunk');
 const { OllamaEmbeddings } = require('@langchain/ollama');
 
@@ -59,59 +60,73 @@ function generateTestMockEmbedding(text, dimensions = 64) {
 }
 
 /**
- * Calculates cosine similarity between two unit vectors.
- * Strictly vector-based dot product of normalized vectors.
+ * Calculates cosine similarity between two vectors.
+ * Properly divides dot product by the Euclidean norms (magnitudes) of both vectors.
  */
 function cosineSimilarity(vecA, vecB) {
   if (!vecA || !vecB || vecA.length !== vecB.length) return 0;
   let dotProduct = 0;
+  let normA = 0;
+  let normB = 0;
   for (let i = 0; i < vecA.length; i++) {
     dotProduct += vecA[i] * vecB[i];
+    normA += vecA[i] * vecA[i];
+    normB += vecB[i] * vecB[i];
   }
-  return dotProduct;
+  const magnitude = Math.sqrt(normA) * Math.sqrt(normB);
+  if (magnitude === 0) return 0;
+  return dotProduct / magnitude;
 }
 
 // =============================================================================
 // REAL PRODUCTION EMBEDDINGS
 // =============================================================================
 
+const EMBEDDING_TIMEOUT_MS = parseInt(process.env.EMBEDDING_TIMEOUT_MS, 10) || 15000;
+
 /**
  * Generates an embedding vector using the real LangChain OllamaEmbeddings service.
- * In production: throws a controlled 503 error if the service is unreachable.
- * Never silently falls back to hash embeddings in production!
+ * In non-development environments: throws a controlled 503 error if the service is unreachable.
+ * Never silently falls back to hash embeddings outside development/test!
  */
 async function getRealEmbedding(text) {
   const embedder = getOllamaEmbedder();
 
   if (embedder) {
+    let timeoutId;
     try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 1500);
       const vector = await Promise.race([
         embedder.embedQuery(text),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('Embedding service timeout')), 1500)),
+        new Promise((_, reject) => {
+          timeoutId = setTimeout(() => reject(new Error('Embedding service timeout')), EMBEDDING_TIMEOUT_MS);
+        }),
       ]);
-      clearTimeout(timeoutId);
       if (Array.isArray(vector) && vector.length > 0) {
         return vector;
       }
     } catch (err) {
-      if (process.env.NODE_ENV === 'production') {
+      if (process.env.NODE_ENV !== 'development' && process.env.NODE_ENV !== 'test') {
         const error = new Error(`Embedding Service Unavailable: Ollama embedding failed (${err.message}).`);
         error.status = 503;
         throw error;
       }
+      console.warn(`[Embedding] Real embedding failed (${err.message}), falling back to dev mock.`);
+    } finally {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
     }
   }
 
-  // In production: strictly fail if real embedding model is offline
-  if (process.env.NODE_ENV === 'production') {
+  // Strictly fail outside explicit development or test mode
+  if (process.env.NODE_ENV !== 'development' && process.env.NODE_ENV !== 'test') {
     const error = new Error('Embedding Service Unavailable: Ollama nomic-embed-text embedding service is offline.');
     error.status = 503;
     throw error;
   }
 
   // Isolated test/local mock: strictly for offline development and unit tests
+  console.warn('[Embedding] Ollama unreachable - using MOCK hash embeddings. Semantic search results are NOT meaningful.');
   return generateTestMockEmbedding(text);
 }
 
@@ -140,36 +155,52 @@ async function searchListingsSemantic({
   let targetCategory = category;
   if (!targetCategory && query) {
     const qLower = query.toLowerCase();
-    if (qLower.includes('laptop') || qLower.includes('notebook') || qLower.includes('macbook') || qLower.includes('thinkpad')) {
-      targetCategory = 'laptops';
-    } else if (qLower.includes('camera') || qLower.includes('lens') || qLower.includes('dslr') || qLower.includes('mirrorless') || qLower.includes('sony a7') || qLower.includes('fujifilm')) {
-      targetCategory = 'cameras';
-    } else if (qLower.includes('gaming') || qLower.includes('handheld') || qLower.includes('steam deck') || qLower.includes('console') || qLower.includes('ps5') || qLower.includes('switch')) {
-      targetCategory = 'gaming';
-    } else if (qLower.includes('phone') || qLower.includes('smartphone') || qLower.includes('iphone') || qLower.includes('galaxy s') || qLower.includes('pixel')) {
-      targetCategory = 'smartphones';
-    } else if (qLower.includes('tablet') || qLower.includes('ipad') || qLower.includes('galaxy tab')) {
-      targetCategory = 'tablets';
-    } else if (qLower.includes('headphone') || qLower.includes('earphone') || qLower.includes('earbuds') || qLower.includes('audio') || qLower.includes('airpods') || qLower.includes('wh-1000xm') || qLower.includes('sound')) {
+    // Audio is checked before smartphones to avoid 'headphones'.includes('phone') misclassification
+    if (/\b(headphone|headphones|earphone|earphones|earbuds|audio|airpods|wh-1000xm|sound)\b/i.test(qLower)) {
       targetCategory = 'audio';
-    } else if (qLower.includes('watch') || qLower.includes('smartwatch') || qLower.includes('apple watch') || qLower.includes('galaxy watch')) {
+    } else if (/\b(laptop|laptops|notebook|notebooks|macbook|thinkpad)\b/i.test(qLower)) {
+      targetCategory = 'laptops';
+    } else if (/\b(camera|cameras|lens|dslr|mirrorless|fujifilm)\b/i.test(qLower) || qLower.includes('sony a7')) {
+      targetCategory = 'cameras';
+    } else if (/\b(gaming|handheld|ps5|console|switch)\b/i.test(qLower) || qLower.includes('steam deck')) {
+      targetCategory = 'gaming';
+    } else if (/\b(phone|phones|smartphone|smartphones|iphone|pixel)\b/i.test(qLower) || qLower.includes('galaxy s')) {
+      targetCategory = 'smartphones';
+    } else if (/\b(tablet|tablets|ipad)\b/i.test(qLower) || qLower.includes('galaxy tab')) {
+      targetCategory = 'tablets';
+    } else if (/\b(watch|watches|smartwatch|smartwatches)\b/i.test(qLower) || qLower.includes('apple watch') || qLower.includes('galaxy watch')) {
       targetCategory = 'smartwatches';
     }
   }
 
-  // Strict deterministic filter criteria
-  const filter = { status: 'active' };
+  // Atlas Vector Search filter (requires exact scalar values, no RegExp)
+  const atlasFilter = { status: 'active' };
   if (budget && Number(budget) > 0) {
-    filter.price = { $lte: Number(budget) };
+    atlasFilter.price = { $lte: Number(budget) };
   }
   if (targetCategory) {
-    filter.category = targetCategory;
+    atlasFilter.category = targetCategory;
   }
   if (brand) {
-    filter.brand = new RegExp(`^${brand}$`, 'i');
+    atlasFilter.brand = String(brand).trim();
   }
   if (minRamGb) {
-    filter['structuredSpecs.ramGb'] = { $gte: Number(minRamGb) };
+    atlasFilter['structuredSpecs.ramGb'] = { $gte: Number(minRamGb) };
+  }
+
+  // Local MongoDB query filter (supports regex)
+  const localFilter = { status: 'active' };
+  if (budget && Number(budget) > 0) {
+    localFilter.price = { $lte: Number(budget) };
+  }
+  if (targetCategory) {
+    localFilter.category = targetCategory;
+  }
+  if (brand) {
+    localFilter.brand = exactCI(brand);
+  }
+  if (minRamGb) {
+    localFilter['structuredSpecs.ramGb'] = { $gte: Number(minRamGb) };
   }
 
   // 1. Production MongoDB Atlas Vector Search Execution
@@ -183,7 +214,7 @@ async function searchListingsSemantic({
             queryVector,
             numCandidates: limit * 10,
             limit: limit * 2,
-            filter,
+            filter: atlasFilter,
           },
         },
         {
@@ -223,9 +254,11 @@ async function searchListingsSemantic({
       ];
 
       const rawAtlasCandidates = await Listing.aggregate(atlasPipeline);
-      const candidates = rawAtlasCandidates.filter((item) => {
-        return !budget || item.price <= Number(budget);
-      });
+      const candidates = rawAtlasCandidates
+        .filter((item) => {
+          return !budget || item.price <= Number(budget);
+        })
+        .slice(0, limit);
 
       return {
         query,
@@ -234,17 +267,19 @@ async function searchListingsSemantic({
         candidates,
       };
     } catch (atlasErr) {
-      if (process.env.NODE_ENV === 'production') {
-        const error = new Error(`Atlas Vector Search failed in production: ${atlasErr.message}`);
+      if (process.env.NODE_ENV !== 'development' && process.env.NODE_ENV !== 'test') {
+        const error = new Error(`Atlas Vector Search failed: ${atlasErr.message}`);
         error.status = 503;
         throw error;
       }
+      console.warn(`[Atlas Vector Search] Error in dev/test, falling back to local: ${atlasErr.message}`);
     }
   }
 
-  // 2. Isolated Test/Local Mock Vector Search (for dev and tests when Atlas is not configured)
-  if (process.env.NODE_ENV !== 'production' || process.env.ALLOW_TEST_VECTOR_MOCK === 'true') {
-    const rawListings = await Listing.find(filter)
+  // 2. Isolated Test/Local Mock Vector Search (strictly for dev and tests when Atlas is not configured)
+  const isDevOrTest = process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'test' || process.env.ALLOW_TEST_VECTOR_MOCK === 'true';
+  if (isDevOrTest) {
+    const rawListings = await Listing.find(localFilter)
       .select('+embedding')
       .populate('sellerId', 'name reputationScore verifiedSalesCount')
       .lean();
@@ -278,7 +313,7 @@ async function searchListingsSemantic({
     };
   }
 
-  // In production if Atlas Vector Search is disabled/unavailable, fail explicitly
+  // Outside development/test if Atlas Vector Search is disabled/unavailable, fail explicitly
   const error = new Error('Production Vector Search Error: MongoDB Atlas Vector Search index is not configured.');
   error.status = 503;
   throw error;
@@ -300,8 +335,12 @@ async function searchSpecificationChunksVector({
 }) {
   const queryVector = await getRealEmbedding(query);
 
-  const brandRegex = new RegExp(`^${brand}$`, 'i');
-  const modelRegex = new RegExp(`^${modelName}$`, 'i');
+  const atlasFilter = {};
+  if (brand) atlasFilter.brand = String(brand).trim();
+  if (modelName) atlasFilter.modelName = String(modelName).trim();
+
+  const brandRegex = brand ? exactCI(brand) : null;
+  const modelRegex = modelName ? exactCI(modelName) : null;
 
   // 1. Production Atlas Vector Search on SpecificationChunk
   if (process.env.ATLAS_VECTOR_SEARCH_ENABLED === 'true') {
@@ -314,10 +353,7 @@ async function searchSpecificationChunksVector({
             queryVector,
             numCandidates: limit * 10,
             limit,
-            filter: {
-              brand: brandRegex,
-              modelName: modelRegex,
-            },
+            filter: atlasFilter,
           },
         },
         {
@@ -339,26 +375,29 @@ async function searchSpecificationChunksVector({
         return chunks;
       }
     } catch (err) {
-      if (process.env.NODE_ENV === 'production') {
+      if (process.env.NODE_ENV !== 'development' && process.env.NODE_ENV !== 'test') {
         const error = new Error(`Atlas Vector Search on specification chunks failed: ${err.message}`);
         error.status = 503;
         throw error;
       }
+      console.warn(`[Specification Vector Search] Error in dev/test, falling back to local: ${err.message}`);
     }
   }
 
-  // In production if Atlas Vector Search is disabled/unavailable, fail explicitly
-  if (process.env.NODE_ENV === 'production') {
+  // Outside development/test if Atlas Vector Search is disabled/unavailable, fail explicitly
+  const isDevOrTest = process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'test' || process.env.ALLOW_TEST_VECTOR_MOCK === 'true';
+  if (!isDevOrTest) {
     const error = new Error('Production Vector Search Error: MongoDB Atlas Vector Search on specification chunks is not configured.');
     error.status = 503;
     throw error;
   }
 
   // 2. Isolated Test/Local Vector Cosine Scoring on Document Chunks (for dev and tests when Atlas is not configured)
-  const storedChunks = await SpecificationChunk.find({
-    brand: brandRegex,
-    modelName: modelRegex,
-  })
+  const localChunkFilter = {};
+  if (brandRegex) localChunkFilter.brand = brandRegex;
+  if (modelRegex) localChunkFilter.modelName = modelRegex;
+
+  const storedChunks = await SpecificationChunk.find(localChunkFilter)
     .select('+embedding')
     .lean();
 

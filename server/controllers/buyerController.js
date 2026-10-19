@@ -5,15 +5,15 @@ const Viewing = require('../models/Viewing');
 const Listing = require('../models/Listing');
 
 const createShortlistSchema = z.object({
-  listingId: z.string().min(1, 'Listing ID is required'),
-  notes: z.string().optional(),
+  listingId: z.string().regex(/^[a-fA-F0-9]{24}$/, 'Invalid listing ID'),
+  notes: z.string().max(1000).optional(),
   priority: z.enum(['high', 'medium', 'low']).optional(),
-  targetBudget: z.number().optional(),
+  targetBudget: z.number().positive('Target budget must be positive').optional(),
 });
 
 const askQuestionSchema = z.object({
   message: z.string().min(3, 'Message must be at least 3 characters').max(2000),
-  subject: z.string().optional(),
+  subject: z.string().max(150).optional(),
 });
 
 const replyQuestionSchema = z.object({
@@ -21,10 +21,11 @@ const replyQuestionSchema = z.object({
 });
 
 const createViewingSchema = z.object({
-  requestedDate: z.string().refine((val) => !isNaN(Date.parse(val)), {
-    message: 'Valid ISO date string is required',
-  }),
-  timeSlot: z.string().min(1, 'Time slot is required (e.g., 14:00 - 15:00)'),
+  requestedDate: z
+    .string()
+    .refine((val) => !isNaN(Date.parse(val)), { message: 'Valid ISO date string is required' })
+    .refine((val) => Date.parse(val) > Date.now(), { message: 'Requested viewing date must be in the future' }),
+  timeSlot: z.string().trim().min(1, 'Time slot is required (e.g., 14:00 - 15:00)').max(50),
   locationType: z.enum([
     'police_station_safe_zone',
     'public_library_lobby',
@@ -32,6 +33,11 @@ const createViewingSchema = z.object({
     'shopping_mall_center',
   ]).default('police_station_safe_zone'),
   buyerNotes: z.string().max(500).optional(),
+});
+
+const updateViewingStatusSchema = z.object({
+  status: z.enum(['confirmed', 'declined', 'cancelled', 'completed']),
+  sellerNotes: z.string().max(1000).optional(),
 });
 
 // POST /api/shortlists - Save listing to buyer shortlist
@@ -92,6 +98,7 @@ exports.getShortlists = async (req, res, next) => {
     const shortlists = await Shortlist.find({ buyerId: req.user._id })
       .populate({
         path: 'listingId',
+        select: '-moderationNote -reportCount',
         populate: { path: 'sellerId', select: 'name reputationScore verifiedSalesCount' },
       })
       .sort({ createdAt: -1 })
@@ -214,10 +221,26 @@ exports.getListingQuestions = async (req, res, next) => {
       .sort({ lastMessageAt: -1 })
       .lean();
 
+    const isModerator = Boolean(req.user.role === 'moderator' && req.user.isStaffAssigned);
+    const sanitizedThreads = threads.map((th) => {
+      const isSeller = th.sellerId && th.sellerId._id.toString() === req.user._id.toString();
+      // To preserve buyer privacy, sellers only see anonymous buyer identity
+      if (isSeller && !isModerator && th.buyerId) {
+        return {
+          ...th,
+          buyerId: {
+            _id: th.buyerId._id,
+            name: 'Verified Buyer',
+          },
+        };
+      }
+      return th;
+    });
+
     return res.status(200).json({
       success: true,
-      count: threads.length,
-      threads,
+      count: sanitizedThreads.length,
+      threads: sanitizedThreads,
     });
   } catch (error) {
     next(error);
@@ -290,10 +313,27 @@ exports.getMyInquiries = async (req, res, next) => {
       .sort({ lastMessageAt: -1 })
       .lean();
 
+    const isModerator = Boolean(req.user.role === 'moderator' && req.user.isStaffAssigned);
+    const sanitizedThreads = threads.map((th) => {
+      const isSeller = th.sellerId && th.sellerId._id.toString() === req.user._id.toString();
+      // Mask buyer name when viewed by seller to preserve privacy guarantee
+      if (isSeller && !isModerator && th.buyerId) {
+        return {
+          ...th,
+          buyerId: {
+            _id: th.buyerId._id,
+            name: 'Verified Buyer',
+            reputationScore: th.buyerId.reputationScore,
+          },
+        };
+      }
+      return th;
+    });
+
     return res.status(200).json({
       success: true,
-      count: threads.length,
-      threads,
+      count: sanitizedThreads.length,
+      threads: sanitizedThreads,
     });
   } catch (error) {
     next(error);
@@ -323,6 +363,20 @@ exports.requestViewing = async (req, res, next) => {
       return res.status(400).json({
         success: false,
         message: 'You cannot request a viewing on your own listing.',
+      });
+    }
+
+    // Prevent spamming repeat viewing requests for the same listing while one is active
+    const existingPendingViewing = await Viewing.findOne({
+      listingId: listing._id,
+      buyerId: req.user._id,
+      status: { $in: ['requested', 'confirmed'] },
+    });
+
+    if (existingPendingViewing) {
+      return res.status(400).json({
+        success: false,
+        message: 'You already have an active viewing request or confirmed booking for this listing.',
       });
     }
 
@@ -376,15 +430,7 @@ exports.getMyViewings = async (req, res, next) => {
 exports.updateViewingStatus = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { status, sellerNotes } = req.body;
-
-    const validStatuses = ['confirmed', 'declined', 'cancelled', 'completed'];
-    if (!validStatuses.includes(status)) {
-      return res.status(400).json({
-        success: false,
-        message: `Invalid status. Must be one of [${validStatuses.join(', ')}]`,
-      });
-    }
+    const { status, sellerNotes } = updateViewingStatusSchema.parse(req.body);
 
     const viewing = await Viewing.findById(id);
     if (!viewing) {
@@ -393,7 +439,7 @@ exports.updateViewingStatus = async (req, res, next) => {
 
     const isBuyer = viewing.buyerId.toString() === req.user._id.toString();
     const isSeller = viewing.sellerId.toString() === req.user._id.toString();
-    const isModerator = req.user.role === 'moderator' && req.user.isStaffAssigned;
+    const isModerator = Boolean(req.user.role === 'moderator' && req.user.isStaffAssigned);
 
     if (!isBuyer && !isSeller && !isModerator) {
       return res.status(403).json({ success: false, message: 'Unauthorized.' });
@@ -426,8 +472,19 @@ exports.updateViewingStatus = async (req, res, next) => {
       }
     }
 
+    // A viewing must be confirmed before it can transition to completed
+    if (status === 'completed' && viewing.status !== 'confirmed') {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid transition: A viewing must be confirmed before it can be marked as completed.',
+      });
+    }
+
     viewing.status = status;
-    if (sellerNotes) viewing.sellerNotes = sellerNotes;
+    // Only seller or moderator can write sellerNotes; buyer cancelling cannot write sellerNotes
+    if (sellerNotes !== undefined && (isSeller || isModerator)) {
+      viewing.sellerNotes = sellerNotes;
+    }
     await viewing.save();
 
     return res.status(200).json({

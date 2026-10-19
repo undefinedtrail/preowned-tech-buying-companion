@@ -47,6 +47,8 @@ router.post(
   listingController.submitEvidence
 );
 
+const moderationController = require('../controllers/moderationController');
+
 router.get(
   '/seller/me',
   authenticate,
@@ -54,13 +56,19 @@ router.get(
   listingController.getMyListings
 );
 
-// Moderator protected route: POST /api/listings/:id/moderation
-const moderationController = require('../controllers/moderationController');
+// Direct moderation routes on listings
 router.post(
   '/:id/moderation',
   authenticate,
   requireRole(['moderator']),
   moderationController.takeModerationAction
+);
+
+router.get(
+  '/:id/history',
+  authenticate,
+  requireRole(['moderator']),
+  moderationController.getModerationHistory
 );
 
 module.exports = router;

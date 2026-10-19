@@ -50,5 +50,6 @@ const specificationChunkSchema = new mongoose.Schema(
 );
 
 specificationChunkSchema.index({ brand: 1, modelName: 1 });
+specificationChunkSchema.index({ specificationId: 1, chunkIndex: 1 }, { unique: true });
 
 module.exports = mongoose.model('SpecificationChunk', specificationChunkSchema);

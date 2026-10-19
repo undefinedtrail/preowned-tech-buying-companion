@@ -12,6 +12,7 @@ const moderationActionSchema = z.object({
     'evidence_verified',
     'evidence_rejected',
     'inconsistency_noted',
+    'dismiss_reports',
   ]),
   reason: z.string().min(5, 'Moderation reason must be at least 5 characters'),
   notes: z.string().optional(),
@@ -88,6 +89,7 @@ exports.takeModerationAction = async (req, res, next) => {
       }
       newStatus = 'active';
       listing.status = 'active';
+      listing.reportCount = 0; // Clear reports upon formal staff approval
       listing.moderationNote = notes || `Approved by moderator: ${reason}`;
     } else if (action === 'suspended') {
       if (listing.status === 'suspended') {
@@ -108,18 +110,24 @@ exports.takeModerationAction = async (req, res, next) => {
       }
       newStatus = 'active';
       listing.status = 'active';
+      listing.reportCount = 0; // Clear report backlog upon formal reinstatement
       listing.moderationNote = null;
     } else if (action === 'flagged') {
       listing.reportCount = (listing.reportCount || 0) + 1;
       listing.moderationNote = `Flagged for review: ${reason}`;
     } else if (action === 'evidence_verified') {
-      if (evidence) {
-        evidence.verificationStatus = 'verified';
-        evidence.moderatorNotes = notes || 'Evidence documents verified by staff.';
-        evidence.verifiedBy = req.user._id;
-        evidence.verifiedAt = new Date();
-        await evidence.save();
+      // Require actual submitted evidence before verifying
+      if (!evidence) {
+        return res.status(400).json({
+          success: false,
+          message: 'Cannot verify evidence: No evidence documents submitted for this listing.',
+        });
       }
+      evidence.verificationStatus = 'verified';
+      evidence.moderatorNotes = notes || 'Evidence documents verified by staff.';
+      evidence.verifiedBy = req.user._id;
+      evidence.verifiedAt = new Date();
+      await evidence.save();
       listing.evidenceStatus = 'verified';
     } else if (action === 'evidence_rejected') {
       if (evidence) {
@@ -130,6 +138,17 @@ exports.takeModerationAction = async (req, res, next) => {
         await evidence.save();
       }
       listing.evidenceStatus = 'rejected';
+    } else if (action === 'inconsistency_noted') {
+      listing.moderationNote = `Inconsistency noted: ${reason}${notes ? ` - ${notes}` : ''}`;
+      if (evidence && evidence.verificationStatus !== 'verified') {
+        evidence.verificationStatus = 'flagged';
+        evidence.moderatorNotes = notes || reason;
+        await evidence.save();
+        listing.evidenceStatus = 'flagged';
+      }
+    } else if (action === 'dismiss_reports') {
+      listing.reportCount = 0;
+      listing.moderationNote = notes || 'Reports reviewed and dismissed by moderator.';
     }
 
     await listing.save();

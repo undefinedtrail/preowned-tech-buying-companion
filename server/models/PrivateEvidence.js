@@ -66,11 +66,20 @@ const privateEvidenceSchema = new mongoose.Schema(
  * Format: "SN-****-9821"
  */
 privateEvidenceSchema.methods.toMaskedJSON = function () {
-  let maskedSerial = 'SN-REDACTED';
-  if (this.serialNumber && this.serialNumber.length > 4) {
-    const visibleSuffix = this.serialNumber.slice(-4);
-    const visiblePrefix = this.serialNumber.slice(0, 3);
-    maskedSerial = `${visiblePrefix}-****-${visibleSuffix}`;
+  let maskedSerial = 'SN-****';
+  if (this.serialNumber) {
+    const len = this.serialNumber.length;
+    if (len >= 8) {
+      const visiblePrefix = this.serialNumber.slice(0, 2);
+      const visibleSuffix = this.serialNumber.slice(-2);
+      maskedSerial = `${visiblePrefix}-****-${visibleSuffix}`;
+    } else if (len >= 5) {
+      const visiblePrefix = this.serialNumber.slice(0, 1);
+      const visibleSuffix = this.serialNumber.slice(-1);
+      maskedSerial = `${visiblePrefix}-****-${visibleSuffix}`;
+    } else {
+      maskedSerial = 'SN-****';
+    }
   }
 
   return {

@@ -8,10 +8,9 @@
     "dev": "node --watch index.js",
     "seed": "node seed.js",
     "test": "node testVerification.js",
-    "test:verify": "node testVerification.js"
+    "test:fixes": "node testSuite.js"
   },
   "dependencies": {
-    "@langchain/community": "^0.3.0",
     "@langchain/core": "^0.3.0",
     "@langchain/ollama": "^0.1.0",
     "bcryptjs": "^2.4.3",
@@ -24,6 +23,19 @@
     "jsonwebtoken": "^9.0.2",
     "langchain": "^0.3.0",
     "mongoose": "^8.3.1",
+    "nodemailer": "^10.1.7",
     "zod": "^3.23.8"
-  }
+  },
+  "keywords": [
+    "preowned",
+    "marketplace",
+    "rag",
+    "langchain",
+    "mongodb",
+    "express"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "license": "ISC"
 }

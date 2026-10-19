@@ -66,11 +66,35 @@ const aiAgentLimiter = rateLimit({
   },
 });
 
+const signupLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 15, // 15 signups per IP per hour
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    message: 'Too many account creation requests from this IP. Please try again later.',
+  },
+});
+
+const semanticSearchLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 40, // 40 semantic embedding search requests per 15 minutes
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    message: 'Too many semantic search queries submitted. Please wait a few moments.',
+  },
+});
+
 module.exports = {
   loginLimiter,
+  signupLimiter,
   verificationLimiter,
   passwordResetLimiter,
   contactLimiter,
   reportLimiter,
   aiAgentLimiter,
+  semanticSearchLimiter,
 };

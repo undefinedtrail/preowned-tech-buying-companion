@@ -17,6 +17,18 @@ const MONGO_URI = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/preowned_t
 
 async function seedDatabase() {
   try {
+    // Safety Guard: Prohibit wipe and seed in production or against remote databases
+    if (process.env.NODE_ENV === 'production') {
+      console.error('[Seeder ERROR] Database wipe and seed is strictly prohibited in production (NODE_ENV=production)!');
+      process.exit(1);
+    }
+
+    const isLocalUri = MONGO_URI.includes('127.0.0.1') || MONGO_URI.includes('localhost');
+    if (!isLocalUri && process.env.ALLOW_REMOTE_SEED !== 'true') {
+      console.error('[Seeder ERROR] MONGO_URI points to a remote or non-localhost database. Seeding is aborted to prevent accidental data loss. Set ALLOW_REMOTE_SEED=true to override.');
+      process.exit(1);
+    }
+
     console.log(`[Seeder] Connecting to MongoDB: ${MONGO_URI}`);
     await mongoose.connect(MONGO_URI);
     console.log('[Seeder] Connected successfully. Clearing existing collections...');

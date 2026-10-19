@@ -4,6 +4,8 @@ const crypto = require('crypto');
 const User = require('../models/User');
 const Session = require('../models/Session');
 const { getJwtSecret } = require('../middleware/auth');
+const { sendVerificationEmail, sendPasswordResetEmail } = require('../services/mailerService');
+const { parseDurationMs } = require('../utils/duration');
 
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7d';
 
@@ -42,7 +44,8 @@ const resetPasswordSchema = z.object({
 const createServerSessionAndCookies = async (req, res, user) => {
   const sessionToken = crypto.randomBytes(32).toString('hex');
   const csrfToken = crypto.randomBytes(32).toString('hex');
-  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days expiring session
+  const sessionLifetimeMs = parseDurationMs(JWT_EXPIRES_IN);
+  const expiresAt = new Date(Date.now() + sessionLifetimeMs);
 
   const session = await Session.create({
     userId: user._id,
@@ -72,7 +75,7 @@ const createServerSessionAndCookies = async (req, res, user) => {
     httpOnly: true,
     secure: isProduction,
     sameSite: 'lax',
-    maxAge: 7 * 24 * 60 * 60 * 1000,
+    maxAge: sessionLifetimeMs,
   });
 
   // Client-readable cookie for CSRF header submission
@@ -80,7 +83,7 @@ const createServerSessionAndCookies = async (req, res, user) => {
     httpOnly: false,
     secure: isProduction,
     sameSite: 'lax',
-    maxAge: 7 * 24 * 60 * 60 * 1000,
+    maxAge: sessionLifetimeMs,
   });
 
   return { token, csrfToken, sessionId: session._id };
@@ -128,6 +131,9 @@ exports.signup = async (req, res, next) => {
       isStaffAssigned: false,
     });
 
+    // Dispatch verification email
+    await sendVerificationEmail(user.email, rawVerificationToken);
+
     const { token, csrfToken } = await createServerSessionAndCookies(req, res, user);
 
     const responsePayload = {
@@ -138,8 +144,8 @@ exports.signup = async (req, res, next) => {
       csrfToken,
     };
 
-    // Return token preview in development for automated grading / testing
-    if (process.env.NODE_ENV !== 'production') {
+    // Return token preview only in development for automated grading / testing
+    if (process.env.NODE_ENV === 'development') {
       responsePayload.verificationTokenPreview = rawVerificationToken;
     }
 
@@ -188,18 +194,11 @@ exports.resendVerification = async (req, res, next) => {
     const { email } = resendVerificationSchema.parse(req.body);
     const user = await User.findOne({ email });
 
-    if (!user) {
-      // Don't disclose user existence
+    if (!user || user.isEmailVerified) {
+      // Don't disclose user existence or verification status to prevent account enumeration
       return res.status(200).json({
         success: true,
-        message: 'If the account exists and is unverified, a new verification link has been generated.',
-      });
-    }
-
-    if (user.isEmailVerified) {
-      return res.status(400).json({
-        success: false,
-        message: 'This account email is already verified.',
+        message: 'If the account exists and is unverified, a new verification link has been sent.',
       });
     }
 
@@ -211,12 +210,14 @@ exports.resendVerification = async (req, res, next) => {
     user.verificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000);
     await user.save({ validateBeforeSave: false });
 
+    await sendVerificationEmail(user.email, rawVerificationToken);
+
     const responsePayload = {
       success: true,
       message: 'New verification token generated successfully.',
     };
 
-    if (process.env.NODE_ENV !== 'production') {
+    if (process.env.NODE_ENV === 'development') {
       responsePayload.verificationTokenPreview = rawVerificationToken;
     }
 
@@ -231,7 +232,9 @@ exports.login = async (req, res, next) => {
   try {
     const validatedData = loginSchema.parse(req.body);
 
-    const user = await User.findOne({ email: validatedData.email }).select('+password');
+    const user = await User.findOne({ email: validatedData.email }).select(
+      '+password +failedLoginAttempts +lockUntil'
+    );
     if (!user) {
       return res.status(401).json({
         success: false,
@@ -239,12 +242,33 @@ exports.login = async (req, res, next) => {
       });
     }
 
+    // Check account lockout
+    if (user.lockUntil && user.lockUntil > new Date()) {
+      const waitMinutes = Math.ceil((user.lockUntil.getTime() - Date.now()) / 60000);
+      return res.status(423).json({
+        success: false,
+        message: `Account is temporarily locked due to excessive failed attempts. Please try again in ${waitMinutes} minute(s).`,
+      });
+    }
+
     const isMatch = await user.comparePassword(validatedData.password);
     if (!isMatch) {
+      user.failedLoginAttempts = (user.failedLoginAttempts || 0) + 1;
+      if (user.failedLoginAttempts >= 5) {
+        user.lockUntil = new Date(Date.now() + 15 * 60 * 1000); // 15-minute lockout
+      }
+      await user.save({ validateBeforeSave: false });
       return res.status(401).json({
         success: false,
         message: 'Invalid email or password credentials.',
       });
+    }
+
+    // Reset failed login attempts on successful login
+    if (user.failedLoginAttempts > 0 || user.lockUntil) {
+      user.failedLoginAttempts = 0;
+      user.lockUntil = null;
+      await user.save({ validateBeforeSave: false });
     }
 
     const { token, csrfToken } = await createServerSessionAndCookies(req, res, user);
@@ -321,14 +345,24 @@ exports.getMe = async (req, res) => {
 // GET /api/auth/csrf-token
 exports.getCsrfToken = async (req, res) => {
   let csrfToken = req.session ? req.session.csrfToken : null;
+  const isProduction = process.env.NODE_ENV === 'production';
+  const cookieMaxAge = parseDurationMs(JWT_EXPIRES_IN);
+
   if (!csrfToken) {
     csrfToken = crypto.randomBytes(32).toString('hex');
-    const isProduction = process.env.NODE_ENV === 'production';
     res.cookie('XSRF-TOKEN', csrfToken, {
       httpOnly: false,
       secure: isProduction,
       sameSite: 'lax',
-      maxAge: 7 * 24 * 60 * 60 * 1000,
+      maxAge: cookieMaxAge,
+    });
+  } else {
+    // Keep XSRF-TOKEN cookie in sync with authenticated server-side session
+    res.cookie('XSRF-TOKEN', csrfToken, {
+      httpOnly: false,
+      secure: isProduction,
+      sameSite: 'lax',
+      maxAge: cookieMaxAge,
     });
   }
   return res.status(200).json({
@@ -356,6 +390,9 @@ exports.forgotPassword = async (req, res, next) => {
     user.resetPasswordToken = crypto.createHash('sha256').update(resetToken).digest('hex');
     user.resetPasswordExpires = new Date(Date.now() + 30 * 60 * 1000); // 30 minutes expiring token
     await user.save({ validateBeforeSave: false });
+
+    // Send password reset email with the raw reset token
+    await sendPasswordResetEmail(user.email, resetToken);
 
     // CRITICAL SECURITY: Never return raw reset token or resetTokenPreview in any API response
     return res.status(200).json({

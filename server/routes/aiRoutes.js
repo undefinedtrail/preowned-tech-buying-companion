@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const aiController = require('../controllers/aiController');
 const { optionalAuth, authenticate } = require('../middleware/auth');
-const { aiAgentLimiter } = require('../middleware/rateLimiter');
+const { aiAgentLimiter, semanticSearchLimiter } = require('../middleware/rateLimiter');
 
 // Comparison Agent - multi-step discovery and inspection (Protected Member Feature)
 router.post(
@@ -24,6 +24,7 @@ router.post(
 router.post(
   '/semantic-search',
   authenticate,
+  semanticSearchLimiter,
   aiController.semanticSearch
 );
 

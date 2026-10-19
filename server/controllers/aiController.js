@@ -3,23 +3,26 @@ const aiService = require('../services/aiService');
 const { searchListingsSemantic } = require('../services/vectorSearchService');
 const DocumentAndRun = require('../models/DocumentAndRun');
 
+const objectId = z.string().regex(/^[a-fA-F0-9]{24}$/, 'Invalid ID format');
+const CATEGORIES = ['laptops', 'cameras', 'smartphones', 'gaming', 'tablets', 'audio', 'smartwatches'];
+
 const comparisonAgentSchema = z.object({
-  query: z.string().min(3, 'Query must be at least 3 characters'),
-  budget: z.number().positive('Budget must be positive').optional(),
+  query: z.string().trim().min(3, 'Query must be at least 3 characters').max(500, 'Query must be at most 500 characters'),
+  budget: z.number().positive('Budget must be positive').max(1000000, 'Budget is unrealistically large').optional(),
 });
 
 const buyerChatSchema = z.object({
-  listingId: z.string().min(1, 'Listing ID is required'),
-  question: z.string().min(3, 'Question must be at least 3 characters'),
+  listingId: objectId,
+  question: z.string().trim().min(3, 'Question must be at least 3 characters').max(500, 'Question must be at most 500 characters'),
 });
 
 const semanticSearchSchema = z.object({
-  query: z.string().min(2, 'Search query must be at least 2 characters'),
-  budget: z.number().optional(),
-  category: z.enum(['laptops', 'cameras', 'smartphones', 'gaming', 'tablets', 'audio', 'smartwatches']).optional(),
-  brand: z.string().optional(),
-  minRamGb: z.number().optional(),
-  limit: z.number().optional(),
+  query: z.string().trim().min(2, 'Search query must be at least 2 characters').max(300, 'Search query must be at most 300 characters'),
+  budget: z.number().positive('Budget must be positive').max(1000000).optional(),
+  category: z.enum(CATEGORIES).optional(),
+  brand: z.string().trim().min(1).max(100).optional(),
+  minRamGb: z.number().int().positive().max(2048).optional(),
+  limit: z.number().int().min(1).max(50).optional(),
 });
 
 // POST /api/comparison-agent - Run the 3-step agent workflow
@@ -50,6 +53,7 @@ exports.buyerChatRAG = async (req, res, next) => {
     const result = await aiService.answerSpecificationQuestion({
       listingId,
       question,
+      user: req.user,
     });
 
     return res.status(200).json({
