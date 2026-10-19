@@ -3,26 +3,14 @@
   "version": "1.0.0",
   "description": "Preowned Tech Buying Companion - Project 07 Capstone",
   "scripts": {
-    "install:all": "npm --prefix server install && npm --prefix client install",
     "seed": "node server/seed.js",
     "server": "node server/index.js",
-    "client": "npm --prefix client run dev",
     "start": "node server/index.js",
     "test": "node server/testVerification.js",
     "test:verify": "node server/testVerification.js"
   },
-  "keywords": [
-    "preowned",
-    "marketplace",
-    "rag",
-    "langchain",
-    "mongodb",
-    "react",
-    "express"
-  ],
+  "keywords": ["preowned", "marketplace", "rag", "langchain", "mongodb", "express"],
   "author": "",
   "license": "ISC",
-  "devDependencies": {
-    "isomorphic-git": "^1.44.3"
-  }
+  "devDependencies": {"isomorphic-git": "^1.44.3"}
 }
