@@ -30,7 +30,7 @@ async function runAcceptanceChecks() {
   console.log('===============================================================\n');
 
   await mongoose.connect(MONGO_URI);
-  const buyerUser = await User.findOne({ email: 'buyer@example.com' });
+  const buyerUser = await User.findOne({ role: 'buyer' });
   let totalTests = 0;
   let passedTests = 0;
 
@@ -802,6 +802,380 @@ async function runAcceptanceChecks() {
       'Staff decision leaves reportedBy as null'
     );
 
+    // -------------------------------------------------------------------------
+    // TEST 25: Password Reset Security & Session Revocation
+    // -------------------------------------------------------------------------
+    console.log('\nTEST 25: Password Reset Security & Session Revocation');
+    const authController = require('./controllers/authController');
+
+    // 25a: forgotPassword must NOT leak raw token in API response
+    let forgotPasswordResData = null;
+    let forgotPasswordStatus = 0;
+    const mockForgotReq = {
+      body: { email: buyerUser.email },
+      headers: {},
+      ip: '127.0.0.1',
+    };
+    const mockForgotRes = {
+      status: (code) => {
+        forgotPasswordStatus = code;
+        return {
+          json: (data) => { forgotPasswordResData = data; },
+        };
+      },
+    };
+    await authController.forgotPassword(mockForgotReq, mockForgotRes, () => {});
+    assert(forgotPasswordStatus === 200, 'forgotPassword returns 200 generic success message');
+    assert(
+      forgotPasswordResData.resetTokenPreview === undefined,
+      'CRITICAL: resetTokenPreview is completely omitted from forgotPassword response'
+    );
+    assert(
+      forgotPasswordResData.token === undefined && forgotPasswordResData.resetToken === undefined,
+      'CRITICAL: No raw reset token is exposed anywhere in the forgotPassword JSON response'
+    );
+
+    // 25b: User document in DB stores securely hashed token, never plaintext
+    const userWithReset = await User.findById(buyerUser._id).select('+resetPasswordToken +resetPasswordExpires');
+    assert(
+      userWithReset.resetPasswordToken !== undefined && userWithReset.resetPasswordToken.length === 64,
+      'Database stores a 64-character sha256 hash of the reset token'
+    );
+    assert(
+      userWithReset.resetPasswordExpires > new Date(),
+      'Reset token has a valid expiration timestamp in the future'
+    );
+
+    // 25c: Create an active session for the user and verify resetPassword revokes it
+    const preResetSession = await Session.create({
+      userId: buyerUser._id,
+      sessionToken: crypto.randomBytes(32).toString('hex'),
+      csrfToken: crypto.randomBytes(32).toString('hex'),
+      expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+    });
+
+    // 25d: Resetting with an invalid token returns 400
+    let invalidResetStatus = 0;
+    const mockInvalidResetReq = {
+      body: { token: 'invalid_raw_token_xyz', newPassword: 'NewPassword123!' },
+      headers: {},
+    };
+    const mockInvalidResetRes = {
+      status: (code) => {
+        invalidResetStatus = code;
+        return { json: () => {} };
+      },
+    };
+    await authController.resetPassword(mockInvalidResetReq, mockInvalidResetRes, () => {});
+    assert(invalidResetStatus === 400, 'resetPassword with invalid/expired token returns 400 Bad Request');
+
+    // Generate a test raw token and place its hash in DB
+    const testRawResetToken = crypto.randomBytes(32).toString('hex');
+    userWithReset.resetPasswordToken = crypto.createHash('sha256').update(testRawResetToken).digest('hex');
+    userWithReset.resetPasswordExpires = new Date(Date.now() + 30 * 60 * 1000);
+    await userWithReset.save();
+
+    let validResetStatus = 0;
+    const mockValidResetReq = {
+      body: { token: testRawResetToken, newPassword: 'Password123!' },
+      headers: {},
+    };
+    const mockValidResetRes = {
+      status: (code) => {
+        validResetStatus = code;
+        return { json: () => {} };
+      },
+    };
+    await authController.resetPassword(mockValidResetReq, mockValidResetRes, () => {});
+    assert(validResetStatus === 200, 'resetPassword with valid token succeeds (200 OK)');
+
+    // Verify token was cleared
+    const postResetUser = await User.findById(buyerUser._id).select('+resetPasswordToken');
+    assert(
+      !postResetUser.resetPasswordToken,
+      'Reset token is immediately invalidated (cleared) upon successful password reset'
+    );
+
+    // Verify sessions were revoked
+    const revokedSessions = await Session.find({ userId: buyerUser._id });
+    assert(
+      revokedSessions.length === 0,
+      'Password reset immediately revokes all active server-side sessions for that user'
+    );
+
+    // -------------------------------------------------------------------------
+    // TEST 26: Strict Moderator Lifecycle Transitions
+    // -------------------------------------------------------------------------
+    console.log('\nTEST 26: Strict Moderator Lifecycle Transitions');
+    const activeTestListing = await Listing.findOne({ status: 'active' });
+    const suspendedTestListing = await Listing.findOne({ status: 'suspended' });
+    const soldTestListing = await Listing.findOne({ status: 'sold' });
+
+    // 26a: Approving an already active listing -> 400
+    let invalidApproveCode = 0;
+    const mockInvalidApproveReq = {
+      params: { id: activeTestListing._id.toString() },
+      user: moderatorUser,
+      body: { action: 'approved', reason: 'Attempting invalid approve on active' },
+    };
+    const mockInvalidApproveRes = {
+      status: (code) => {
+        invalidApproveCode = code;
+        return { json: () => {} };
+      },
+    };
+    await moderationController.takeModerationAction(mockInvalidApproveReq, mockInvalidApproveRes, () => {});
+    assert(invalidApproveCode === 400, 'takeModerationAction rejects approving an already active listing (400 Bad Request)');
+
+    // 26b: Reinstating an active listing -> 400
+    let invalidReinstateCode = 0;
+    const mockInvalidReinstateReq = {
+      params: { id: activeTestListing._id.toString() },
+      user: moderatorUser,
+      body: { action: 'reinstated', reason: 'Attempting invalid reinstate on active' },
+    };
+    const mockInvalidReinstateRes = {
+      status: (code) => {
+        invalidReinstateCode = code;
+        return { json: () => {} };
+      },
+    };
+    await moderationController.takeModerationAction(mockInvalidReinstateReq, mockInvalidReinstateRes, () => {});
+    assert(invalidReinstateCode === 400, 'takeModerationAction rejects reinstating a non-suspended listing (400 Bad Request)');
+
+    // 26c: Any modification on sold listing -> 400
+    let soldModCode = 0;
+    const mockSoldModReq = {
+      params: { id: soldTestListing._id.toString() },
+      user: moderatorUser,
+      body: { action: 'suspended', reason: 'Attempting modification on sold item' },
+    };
+    const mockSoldModRes = {
+      status: (code) => {
+        soldModCode = code;
+        return { json: () => {} };
+      },
+    };
+    await moderationController.takeModerationAction(mockSoldModReq, mockSoldModRes, () => {});
+    assert(soldModCode === 400, 'takeModerationAction rejects modifying a permanently sold listing (400 Bad Request)');
+
+    // 26d: Suspending an already suspended listing -> 400
+    let duplicateSuspendCode = 0;
+    const mockDuplicateSuspendReq = {
+      params: { id: suspendedTestListing._id.toString() },
+      user: moderatorUser,
+      body: { action: 'suspended', reason: 'Attempting duplicate suspend' },
+    };
+    const mockDuplicateSuspendRes = {
+      status: (code) => {
+        duplicateSuspendCode = code;
+        return { json: () => {} };
+      },
+    };
+    await moderationController.takeModerationAction(mockDuplicateSuspendReq, mockDuplicateSuspendRes, () => {});
+    assert(duplicateSuspendCode === 400, 'takeModerationAction rejects suspending an already suspended listing (400 Bad Request)');
+
+    // -------------------------------------------------------------------------
+    // TEST 27: Inactive Listing Operations Block
+    // -------------------------------------------------------------------------
+    console.log('\nTEST 27: Inactive Listing Operations Block (Shortlist, Inquiry, Viewing)');
+    const buyerController = require('./controllers/buyerController');
+
+    // 27a: Shortlist blocked on suspended and sold listings
+    let shortlistSuspendedCode = 0;
+    await buyerController.addToShortlist(
+      { user: buyerUser, body: { listingId: suspendedTestListing._id.toString() } },
+      { status: (code) => { shortlistSuspendedCode = code; return { json: () => {} }; } },
+      () => {}
+    );
+    assert(shortlistSuspendedCode === 400, 'addToShortlist blocks suspended listings with 400 Bad Request');
+
+    let shortlistSoldCode = 0;
+    await buyerController.addToShortlist(
+      { user: buyerUser, body: { listingId: soldTestListing._id.toString() } },
+      { status: (code) => { shortlistSoldCode = code; return { json: () => {} }; } },
+      () => {}
+    );
+    assert(shortlistSoldCode === 400, 'addToShortlist blocks sold listings with 400 Bad Request');
+
+    // 27b: Inquiries blocked on suspended and sold listings
+    let inquirySuspendedCode = 0;
+    await buyerController.askQuestion(
+      { user: buyerUser, params: { id: suspendedTestListing._id.toString() }, body: { message: 'Is this available?' } },
+      { status: (code) => { inquirySuspendedCode = code; return { json: () => {} }; } },
+      () => {}
+    );
+    assert(inquirySuspendedCode === 400, 'askQuestion blocks inquiries on suspended listings with 400 Bad Request');
+
+    let inquirySoldCode = 0;
+    await buyerController.askQuestion(
+      { user: buyerUser, params: { id: soldTestListing._id.toString() }, body: { message: 'Can I buy this?' } },
+      { status: (code) => { inquirySoldCode = code; return { json: () => {} }; } },
+      () => {}
+    );
+    assert(inquirySoldCode === 400, 'askQuestion blocks inquiries on sold listings with 400 Bad Request');
+
+    // 27c: Viewings blocked on suspended and sold listings
+    const viewingSlotPayload = {
+      requestedDate: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+      timeSlot: '14:00 - 15:00',
+      locationType: 'police_station_safe_zone',
+    };
+
+    let viewingSuspendedCode = 0;
+    await buyerController.requestViewing(
+      { user: buyerUser, params: { id: suspendedTestListing._id.toString() }, body: viewingSlotPayload },
+      { status: (code) => { viewingSuspendedCode = code; return { json: () => {} }; } },
+      () => {}
+    );
+    assert(viewingSuspendedCode === 400, 'requestViewing blocks bookings on suspended listings with 400 Bad Request');
+
+    let viewingSoldCode = 0;
+    await buyerController.requestViewing(
+      { user: buyerUser, params: { id: soldTestListing._id.toString() }, body: viewingSlotPayload },
+      { status: (code) => { viewingSoldCode = code; return { json: () => {} }; } },
+      () => {}
+    );
+    assert(viewingSoldCode === 400, 'requestViewing blocks bookings on sold listings with 400 Bad Request');
+
+    // -------------------------------------------------------------------------
+    // TEST 28: Viewing Lifecycle Guardrails (Finalized Viewings Immutable)
+    // -------------------------------------------------------------------------
+    console.log('\nTEST 28: Viewing Lifecycle Guardrails');
+    const finalizedViewing = await Viewing.create({
+      listingId: activeTestListing._id,
+      buyerId: buyerUser._id,
+      sellerId: sellerUser._id,
+      requestedDate: new Date(),
+      timeSlot: '10:00 - 11:00',
+      locationType: 'police_station_safe_zone',
+      status: 'completed',
+    });
+
+    let updateCompletedCode = 0;
+    await buyerController.updateViewingStatus(
+      { user: sellerUser, params: { id: finalizedViewing._id.toString() }, body: { status: 'confirmed' } },
+      { status: (code) => { updateCompletedCode = code; return { json: () => {} }; } },
+      () => {}
+    );
+    assert(updateCompletedCode === 400, 'updateViewingStatus blocks modifying a completed viewing with 400 Bad Request');
+
+    finalizedViewing.status = 'cancelled';
+    await finalizedViewing.save();
+
+    let updateCancelledCode = 0;
+    await buyerController.updateViewingStatus(
+      { user: buyerUser, params: { id: finalizedViewing._id.toString() }, body: { status: 'confirmed' } },
+      { status: (code) => { updateCancelledCode = code; return { json: () => {} }; } },
+      () => {}
+    );
+    assert(updateCancelledCode === 400, 'updateViewingStatus blocks modifying a cancelled viewing with 400 Bad Request');
+
+    await Viewing.deleteOne({ _id: finalizedViewing._id });
+
+    // -------------------------------------------------------------------------
+    // TEST 29: Cross-User IDOR Security & Public Detail Redaction
+    // -------------------------------------------------------------------------
+    console.log('\nTEST 29: Cross-User IDOR Security & Public Detail Redaction');
+    const otherBuyer = await User.create({
+      name: 'Other Buyer Test',
+      email: `otherbuyer_${Date.now()}@seed.local`,
+      password: 'Password123!',
+      role: 'buyer',
+      isEmailVerified: true,
+    });
+
+    // 29a: otherBuyer cannot delete buyerUser's shortlist entry
+    const existingShortlist = await Shortlist.findOne({ buyerId: buyerUser._id });
+    if (existingShortlist) {
+      let idorShortlistCode = 0;
+      await buyerController.removeFromShortlist(
+        { user: otherBuyer, params: { id: existingShortlist._id.toString() } },
+        { status: (code) => { idorShortlistCode = code; return { json: () => {} }; } },
+        () => {}
+      );
+      assert(idorShortlistCode === 404, 'IDOR: User B cannot delete User A\'s shortlist item (404/Not Found)');
+    }
+
+    // 29b: otherBuyer cannot reply to a question thread they do not participate in
+    const existingQuestion = await Question.findOne({ buyerId: buyerUser._id });
+    if (existingQuestion) {
+      let idorQuestionCode = 0;
+      await buyerController.replyQuestion(
+        { user: otherBuyer, params: { threadId: existingQuestion._id.toString() }, body: { message: 'Unauthorized reply' } },
+        { status: (code) => { idorQuestionCode = code; return { json: () => {} }; } },
+        () => {}
+      );
+      assert(idorQuestionCode === 403, 'IDOR: Non-participant cannot reply to private inquiry thread (403 Unauthorized)');
+    }
+
+    // 29c: Public detail redacts moderationNote from non-moderators
+    let publicDetailData = null;
+    await listingController.getListingById(
+      { user: otherBuyer, params: { id: activeTestListing._id.toString() } },
+      { status: () => ({ json: (data) => { publicDetailData = data; } }) },
+      () => {}
+    );
+    assert(
+      publicDetailData.listing.moderationNote === undefined,
+      'Public listing detail strictly redacts moderationNote from non-moderator buyers'
+    );
+
+    await User.deleteOne({ _id: otherBuyer._id });
+
+    // -------------------------------------------------------------------------
+    // TEST 30: CSRF with Database Session Verification
+    // -------------------------------------------------------------------------
+    console.log('\nTEST 30: CSRF with MongoDB Session Verification');
+    const validSessionDoc = await Session.create({
+      userId: buyerUser._id,
+      sessionToken: crypto.randomBytes(32).toString('hex'),
+      csrfToken: 'matching-session-csrf-secret-999',
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+    });
+
+    const validSessionJwt = jwt.sign(
+      { id: buyerUser._id, sessionId: validSessionDoc._id, role: 'buyer' },
+      getJwtSecret(),
+      { expiresIn: '1h' }
+    );
+
+    // 30a: Valid session cookie + matching CSRF header -> accepted
+    let sessionCsrfAccepted = false;
+    await verifyCsrf(
+      {
+        method: 'POST',
+        path: '/api/shortlists',
+        cookies: { token: validSessionJwt },
+        headers: { 'x-csrf-token': 'matching-session-csrf-secret-999' },
+      },
+      {},
+      () => { sessionCsrfAccepted = true; }
+    );
+    assert(sessionCsrfAccepted, 'CSRF passes when matching header matches valid MongoDB session csrfToken');
+
+    // 30b: Expired session in MongoDB -> rejected with 403
+    validSessionDoc.expiresAt = new Date(Date.now() - 10000); // expired
+    await validSessionDoc.save();
+
+    let expiredSessionCsrfCode = 0;
+    await verifyCsrf(
+      {
+        method: 'POST',
+        path: '/api/shortlists',
+        cookies: { token: validSessionJwt },
+        headers: { 'x-csrf-token': 'matching-session-csrf-secret-999' },
+      },
+      { status: (code) => { expiredSessionCsrfCode = code; return { json: () => {} }; } },
+      () => {}
+    );
+    assert(
+      expiredSessionCsrfCode === 403,
+      'CSRF Protection strictly rejects requests backed by expired/revoked MongoDB sessions (403 Forbidden)'
+    );
+
+    await Session.deleteOne({ _id: validSessionDoc._id });
+
     // Summary
     console.log('\n===============================================================');
     console.log(`TEST RESULTS: ${passedTests} / ${totalTests} CHECKS PASSED (100% PASS RATE)`);
@@ -815,3 +1189,4 @@ async function runAcceptanceChecks() {
 }
 
 runAcceptanceChecks();
+

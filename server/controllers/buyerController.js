@@ -44,6 +44,13 @@ exports.addToShortlist = async (req, res, next) => {
       return res.status(404).json({ success: false, message: 'Listing not found.' });
     }
 
+    if (listing.status !== 'active') {
+      return res.status(400).json({
+        success: false,
+        message: `Shortlist Blocked: Only active listings can be added to your shortlist. Current status: ${listing.status}.`,
+      });
+    }
+
     const existing = await Shortlist.findOne({
       buyerId: req.user._id,
       listingId: validatedData.listingId,
@@ -136,10 +143,10 @@ exports.askQuestion = async (req, res, next) => {
       return res.status(404).json({ success: false, message: 'Listing not found.' });
     }
 
-    if (listing.status === 'suspended') {
+    if (listing.status !== 'active') {
       return res.status(400).json({
         success: false,
-        message: 'Inquiry Blocked: This listing has been suspended for safety/moderation review.',
+        message: `Inquiry Blocked: Only active listings can receive inquiries. Current status: ${listing.status}.`,
       });
     }
 
@@ -304,18 +311,11 @@ exports.requestViewing = async (req, res, next) => {
       return res.status(404).json({ success: false, message: 'Listing not found.' });
     }
 
-    // STRICT SECURITY RULE: A suspended or sold listing CANNOT receive new viewing bookings!
-    if (listing.status === 'suspended') {
+    // STRICT SECURITY RULE: Only active listings can receive viewing bookings!
+    if (listing.status !== 'active') {
       return res.status(400).json({
         success: false,
-        message: 'Viewing Booking Blocked: This listing has been suspended for safety/moderation review and cannot receive new viewings.',
-      });
-    }
-
-    if (listing.status === 'sold') {
-      return res.status(400).json({
-        success: false,
-        message: 'Viewing Booking Blocked: This item has already been marked as sold.',
+        message: `Viewing Booking Blocked: Only active listings can receive viewing bookings. Current status: ${listing.status}.`,
       });
     }
 
@@ -397,6 +397,14 @@ exports.updateViewingStatus = async (req, res, next) => {
 
     if (!isBuyer && !isSeller && !isModerator) {
       return res.status(403).json({ success: false, message: 'Unauthorized.' });
+    }
+
+    // Finalized viewing bookings cannot be transitioned
+    if (['cancelled', 'completed', 'declined'].includes(viewing.status)) {
+      return res.status(400).json({
+        success: false,
+        message: `Invalid transition: Viewing is already finalized (${viewing.status}) and cannot be updated.`,
+      });
     }
 
     // Role-specific transition rules

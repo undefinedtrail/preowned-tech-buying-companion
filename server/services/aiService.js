@@ -253,7 +253,7 @@ async function ensureSpecificationChunksIndexed(specification) {
 const findListingsSchema = z.object({
   needs: z.string().min(2, 'Search terms or requirements must be at least 2 characters').describe('Search terms or buyer use-case (e.g. coding laptop, 4K camera)'),
   budget: z.number().positive('Budget must be greater than 0').optional().nullable().describe('Strict maximum budget in USD (hard price ceiling). High similarity CANNOT override this.'),
-  category: z.enum(['laptops', 'cameras', 'gaming']).optional().describe('Product category'),
+  category: z.enum(['laptops', 'cameras', 'smartphones', 'gaming', 'tablets', 'audio', 'smartwatches']).optional().describe('Product category'),
   minRamGb: z.number().positive().optional().describe('Minimum required RAM in GB'),
 });
 
@@ -825,13 +825,24 @@ STRICT SAFETY AND CITATION RULES:
         isSupported = false;
         specificDetail = `According to the **Official Manufacturer Manual**: Storage is integrated/proprietary and cannot be upgraded with standard M.2 drives.`;
       }
-    } else if (retrievedChunks.length === 0) {
-      isSupported = false;
-      gracefulMissingDataNotice = 'No official manufacturer documentation confirms this specific feature.';
-      specificDetail = `⚠️ **Data Gap / Unsupported Capability**: The official ${officialSpec ? officialSpec.brand : listing.brand} reference manual does not contain verified documentation regarding this requirement ("${question}"). Because manufacturer documentation does not confirm this feature, it must be treated as **unsupported** and unverified.`;
     } else {
-      const topChunk = retrievedChunks[0];
-      specificDetail = `According to **${topChunk.sourceDoc}** (${topChunk.sectionTitle}): "${topChunk.pageContent}".`;
+      // Check if retrieved chunks genuinely mention the subject keywords of the question
+      const subjectWords = qLower
+        .replace(/[^a-z0-9\s]/g, '')
+        .split(/\s+/)
+        .filter((w) => !['does', 'this', 'laptop', 'device', 'phone', 'camera', 'support', 'have', 'can', 'the', 'is', 'it', 'a', 'an', 'to', 'for', 'with', 'on'].includes(w));
+
+      const chunkTexts = retrievedChunks.map((c) => (c.pageContent + ' ' + c.sectionTitle).toLowerCase()).join(' ');
+      const hasSubjectMatch = subjectWords.length > 0 && subjectWords.some((word) => chunkTexts.includes(word));
+
+      if (!hasSubjectMatch || retrievedChunks.length === 0) {
+        isSupported = false;
+        gracefulMissingDataNotice = `The official manufacturer documentation for ${listing.brand} ${listing.modelName} does not document or support this feature ("${question}").`;
+        specificDetail = `⚠️ **Data Gap / Unsupported Capability**: The official ${officialSpec ? officialSpec.brand : listing.brand} reference manual does not contain verified documentation regarding this requirement ("${question}"). Because manufacturer documentation does not confirm this feature, it must be treated as **unsupported** and unverified.`;
+      } else {
+        const topChunk = retrievedChunks[0];
+        specificDetail = `According to **${topChunk.sourceDoc}** (${topChunk.sectionTitle}): "${topChunk.pageContent}".`;
+      }
     }
 
     answer = `### Specification RAG Verification for ${listing.brand} ${listing.modelName}

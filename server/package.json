@@ -7,6 +7,7 @@
     "start": "node index.js",
     "dev": "node --watch index.js",
     "seed": "node seed.js",
+    "test": "node testVerification.js",
     "test:verify": "node testVerification.js"
   },
   "dependencies": {

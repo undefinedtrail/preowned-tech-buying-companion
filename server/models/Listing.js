@@ -15,7 +15,7 @@ const listingSchema = new mongoose.Schema(
     },
     category: {
       type: String,
-      enum: ['laptops', 'cameras', 'gaming'],
+      enum: ['laptops', 'cameras', 'smartphones', 'gaming', 'tablets', 'audio', 'smartwatches'],
       required: [true, 'Category is required'],
       index: true,
     },

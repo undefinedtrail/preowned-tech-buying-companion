@@ -70,11 +70,11 @@ export const AuthProvider = ({ children }) => {
   // Quick Demo Role Switcher (Helper for rapid evaluation & reviewer testing)
   const quickSwitchRole = async (targetRole) => {
     try {
-      let credentials = { email: 'buyer@example.com', password: 'Password123!' };
+      let credentials = { email: 'buyer.priya01@seed.local', password: 'Password123!' };
       if (targetRole === 'seller') {
-        credentials = { email: 'seller1@example.com', password: 'Password123!' };
+        credentials = { email: 'seller.aarav01@seed.local', password: 'Password123!' };
       } else if (targetRole === 'moderator') {
-        credentials = { email: 'moderator@example.com', password: 'Password123!' };
+        credentials = { email: 'moderator.staff01@seed.local', password: 'Password123!' };
       }
 
       await login(credentials.email, credentials.password);

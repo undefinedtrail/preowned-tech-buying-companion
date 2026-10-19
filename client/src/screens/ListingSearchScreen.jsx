@@ -191,7 +191,11 @@ export const ListingSearchScreen = ({ onOpenDetail, onOpenAgent }) => {
           { label: 'All Categories', value: '' },
           { label: '💻 Laptops', value: 'laptops' },
           { label: '📷 Cameras', value: 'cameras' },
-          { label: '🎮 Gaming Handhelds', value: 'gaming' },
+          { label: '🎮 Gaming', value: 'gaming' },
+          { label: '📱 Smartphones', value: 'smartphones' },
+          { label: '📱 Tablets', value: 'tablets' },
+          { label: '🎧 Audio', value: 'audio' },
+          { label: '⌚ Smartwatches', value: 'smartwatches' },
         ].map((tab) => (
           <button
             key={tab.value}

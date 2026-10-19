@@ -274,7 +274,7 @@ export const Navbar = ({ onOpenAgent }) => {
                   className="px-2.5 py-2 rounded-xl bg-slate-800/80 hover:bg-slate-700/80 border border-slate-700 text-left transition-colors cursor-pointer"
                 >
                   <div className="text-xs font-bold text-white">Buyer</div>
-                  <div className="text-[10px] text-slate-400 truncate">Alex Buyer</div>
+                  <div className="text-[10px] text-slate-400 truncate">Priya S. (Buyer)</div>
                 </button>
                 <button
                   type="button"
@@ -283,7 +283,7 @@ export const Navbar = ({ onOpenAgent }) => {
                   className="px-2.5 py-2 rounded-xl bg-slate-800/80 hover:bg-slate-700/80 border border-slate-700 text-left transition-colors cursor-pointer"
                 >
                   <div className="text-xs font-bold text-white">Seller</div>
-                  <div className="text-[10px] text-slate-400 truncate">Sarah Seller</div>
+                  <div className="text-[10px] text-slate-400 truncate">Aarav K. (Seller)</div>
                 </button>
                 <button
                   type="button"
@@ -292,7 +292,7 @@ export const Navbar = ({ onOpenAgent }) => {
                   className="px-2.5 py-2 rounded-xl bg-red-950/40 hover:bg-red-950/70 border border-red-800/60 text-left transition-colors cursor-pointer"
                 >
                   <div className="text-xs font-bold text-red-200">Moderator</div>
-                  <div className="text-[10px] text-red-400 truncate">Marcus Mod</div>
+                  <div className="text-[10px] text-red-400 truncate">Staff Reviewer</div>
                 </button>
               </div>
             </div>

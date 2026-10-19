@@ -71,17 +71,41 @@ exports.takeModerationAction = async (req, res, next) => {
 
     const evidence = await PrivateEvidence.findOne({ listingId: listing._id });
 
-    // Enforce Rule: Moderator CANNOT silently rewrite seller's condition declaration!
-    // They can only flag, suspend, reinstate, or verify/reject evidence.
+    // Enforce strict listing lifecycle transitions
+    if (listing.status === 'sold') {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid transition: Sold listings are permanently finalized and cannot be modified.',
+      });
+    }
+
     if (action === 'approved') {
+      if (listing.status !== 'pending') {
+        return res.status(400).json({
+          success: false,
+          message: `Invalid transition: Only pending listings can be approved. Current status: ${listing.status}.`,
+        });
+      }
       newStatus = 'active';
       listing.status = 'active';
       listing.moderationNote = notes || `Approved by moderator: ${reason}`;
     } else if (action === 'suspended') {
+      if (listing.status === 'suspended') {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid transition: Listing is already suspended.',
+        });
+      }
       newStatus = 'suspended';
       listing.status = 'suspended';
       listing.moderationNote = `Suspended by moderator: ${reason}`;
     } else if (action === 'reinstated') {
+      if (listing.status !== 'suspended') {
+        return res.status(400).json({
+          success: false,
+          message: `Invalid transition: Only suspended listings can be reinstated. Current status: ${listing.status}.`,
+        });
+      }
       newStatus = 'active';
       listing.status = 'active';
       listing.moderationNote = null;

@@ -142,10 +142,18 @@ async function searchListingsSemantic({
     const qLower = query.toLowerCase();
     if (qLower.includes('laptop') || qLower.includes('notebook') || qLower.includes('macbook') || qLower.includes('thinkpad')) {
       targetCategory = 'laptops';
-    } else if (qLower.includes('camera') || qLower.includes('lens') || qLower.includes('dslr') || qLower.includes('mirrorless')) {
+    } else if (qLower.includes('camera') || qLower.includes('lens') || qLower.includes('dslr') || qLower.includes('mirrorless') || qLower.includes('sony a7') || qLower.includes('fujifilm')) {
       targetCategory = 'cameras';
-    } else if (qLower.includes('gaming') || qLower.includes('handheld') || qLower.includes('steam deck') || qLower.includes('console')) {
+    } else if (qLower.includes('gaming') || qLower.includes('handheld') || qLower.includes('steam deck') || qLower.includes('console') || qLower.includes('ps5') || qLower.includes('switch')) {
       targetCategory = 'gaming';
+    } else if (qLower.includes('phone') || qLower.includes('smartphone') || qLower.includes('iphone') || qLower.includes('galaxy s') || qLower.includes('pixel')) {
+      targetCategory = 'smartphones';
+    } else if (qLower.includes('tablet') || qLower.includes('ipad') || qLower.includes('galaxy tab')) {
+      targetCategory = 'tablets';
+    } else if (qLower.includes('headphone') || qLower.includes('earphone') || qLower.includes('earbuds') || qLower.includes('audio') || qLower.includes('airpods') || qLower.includes('wh-1000xm') || qLower.includes('sound')) {
+      targetCategory = 'audio';
+    } else if (qLower.includes('watch') || qLower.includes('smartwatch') || qLower.includes('apple watch') || qLower.includes('galaxy watch')) {
+      targetCategory = 'smartwatches';
     }
   }
 

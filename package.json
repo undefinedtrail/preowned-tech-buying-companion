@@ -8,6 +8,7 @@
     "server": "node server/index.js",
     "client": "npm --prefix client run dev",
     "start": "node server/index.js",
+    "test": "node server/testVerification.js",
     "test:verify": "node server/testVerification.js"
   },
   "keywords": [

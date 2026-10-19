@@ -8,7 +8,7 @@ const { getEmbedding } = require('../services/vectorSearchService');
 const createListingSchema = z.object({
   title: z.string().min(5, 'Title must be at least 5 characters'),
   description: z.string().min(10, 'Description must be at least 10 characters'),
-  category: z.enum(['laptops', 'cameras', 'gaming']),
+  category: z.enum(['laptops', 'cameras', 'smartphones', 'gaming', 'tablets', 'audio', 'smartwatches']),
   brand: z.string().min(1, 'Brand is required'),
   modelName: z.string().min(1, 'Model name is required'),
   price: z.number().min(1, 'Price must be greater than 0'),
@@ -20,7 +20,7 @@ const createListingSchema = z.object({
 });
 
 const updateListingSchema = createListingSchema.partial().extend({
-  status: z.enum(['active', 'suspended', 'sold']).optional(),
+  status: z.enum(['active', 'suspended', 'sold', 'pending']).optional(),
 });
 
 const submitEvidenceSchema = z.object({
@@ -136,10 +136,13 @@ exports.getListingById = async (req, res, next) => {
       });
     }
 
-    // STRICT PRIVACY RULE: Seller email must never leak to public buyers
+    // STRICT PRIVACY RULE: Seller email and moderation notes must never leak to public buyers
     const listingObj = listing.toObject();
     if (!isOwner && !isModerator && listingObj.sellerId) {
       delete listingObj.sellerId.email;
+    }
+    if (!isModerator) {
+      delete listingObj.moderationNote;
     }
 
     // Fetch official manufacturer specification to support side-by-side 3-way comparison

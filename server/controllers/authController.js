@@ -264,21 +264,41 @@ exports.login = async (req, res, next) => {
 // POST /api/auth/logout
 exports.logout = async (req, res, next) => {
   try {
-    // Invalidate server-side session in database
-    if (req.cookies && req.cookies.token) {
+    // Invalidate server-side session in database from cookies or headers
+    let sessionIdToDelete = req.session ? req.session._id : null;
+
+    if (!sessionIdToDelete && req.cookies && req.cookies.token) {
       try {
         const JWT_SECRET = getJwtSecret();
         const decoded = jwt.verify(req.cookies.token, JWT_SECRET);
         if (decoded.sessionId) {
-          await Session.findByIdAndDelete(decoded.sessionId);
+          sessionIdToDelete = decoded.sessionId;
         }
       } catch (e) {
         // Token was invalid or expired already
       }
     }
 
-    res.clearCookie('token', { httpOnly: true, sameSite: 'lax' });
-    res.clearCookie('XSRF-TOKEN', { sameSite: 'lax' });
+    if (!sessionIdToDelete && req.headers.authorization && req.headers.authorization.startsWith('Bearer ')) {
+      try {
+        const token = req.headers.authorization.split(' ')[1];
+        const JWT_SECRET = getJwtSecret();
+        const decoded = jwt.verify(token, JWT_SECRET);
+        if (decoded.sessionId) {
+          sessionIdToDelete = decoded.sessionId;
+        }
+      } catch (e) {
+        // Token was invalid or expired already
+      }
+    }
+
+    if (sessionIdToDelete) {
+      await Session.findByIdAndDelete(sessionIdToDelete);
+    }
+
+    const isProduction = process.env.NODE_ENV === 'production';
+    res.clearCookie('token', { httpOnly: true, sameSite: 'lax', secure: isProduction });
+    res.clearCookie('XSRF-TOKEN', { sameSite: 'lax', secure: isProduction });
 
     return res.status(200).json({
       success: true,
@@ -330,15 +350,17 @@ exports.forgotPassword = async (req, res, next) => {
       });
     }
 
+    // Generate cryptographically secure random reset token
     const resetToken = crypto.randomBytes(32).toString('hex');
+    // Store only a securely hashed token server-side; raw token is NEVER stored or leaked
     user.resetPasswordToken = crypto.createHash('sha256').update(resetToken).digest('hex');
-    user.resetPasswordExpires = Date.now() + 30 * 60 * 1000; // 30 minutes
+    user.resetPasswordExpires = new Date(Date.now() + 30 * 60 * 1000); // 30 minutes expiring token
     await user.save({ validateBeforeSave: false });
 
+    // CRITICAL SECURITY: Never return raw reset token or resetTokenPreview in any API response
     return res.status(200).json({
       success: true,
-      message: 'Password reset token generated.',
-      resetTokenPreview: resetToken,
+      message: 'If the email exists, password reset instructions have been dispatched.',
     });
   } catch (error) {
     next(error);
@@ -354,7 +376,7 @@ exports.resetPassword = async (req, res, next) => {
     const user = await User.findOne({
       resetPasswordToken: hashedToken,
       resetPasswordExpires: { $gt: Date.now() },
-    });
+    }).select('+password +resetPasswordToken +resetPasswordExpires');
 
     if (!user) {
       return res.status(400).json({
@@ -364,11 +386,12 @@ exports.resetPassword = async (req, res, next) => {
     }
 
     user.password = newPassword;
-    user.resetPasswordToken = null;
-    user.resetPasswordExpires = null;
+    // Used reset token becomes invalid immediately
+    user.resetPasswordToken = undefined;
+    user.resetPasswordExpires = undefined;
     await user.save();
 
-    // Revoke all existing sessions for this user on password reset
+    // Password reset must revoke all existing sessions for that user
     await Session.deleteMany({ userId: user._id });
 
     return res.status(200).json({

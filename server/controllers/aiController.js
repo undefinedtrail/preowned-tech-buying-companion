@@ -16,7 +16,7 @@ const buyerChatSchema = z.object({
 const semanticSearchSchema = z.object({
   query: z.string().min(2, 'Search query must be at least 2 characters'),
   budget: z.number().optional(),
-  category: z.enum(['laptops', 'cameras', 'gaming']).optional(),
+  category: z.enum(['laptops', 'cameras', 'smartphones', 'gaming', 'tablets', 'audio', 'smartwatches']).optional(),
   brand: z.string().optional(),
   minRamGb: z.number().optional(),
   limit: z.number().optional(),
