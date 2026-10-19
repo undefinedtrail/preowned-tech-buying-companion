@@ -582,7 +582,11 @@ Rules:
       }
 
       // Application validates tool arguments with Zod schema
-      const validation = tool.schema.safeParse(toolCall.args);
+      const args = toolCall.name === 'findListings'
+        ? { ...toolCall.args, budget: budget || null }
+        : toolCall.args;
+const validation = tool.schema.safeParse(args);
+
       if (!validation.success) {
         messages.push(new ToolMessage({
           tool_call_id: toolCall.id,
