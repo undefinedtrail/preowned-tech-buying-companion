@@ -2,16 +2,13 @@ const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const Session = require('../models/Session');
 
-const getJwtSecret = () => {
-  const secret = process.env.JWT_SECRET;
-  if (!secret) {
-    if (process.env.NODE_ENV === 'production') {
-      throw new Error('FATAL SECURITY ERROR: JWT_SECRET environment variable must be set in production!');
-    }
-    return 'preowned_tech_companion_jwt_super_secure_secret_2026_xyz';
-  }
-  return secret;
-};
+   const getJwtSecret = () => {
+     const secret = process.env.JWT_SECRET;
+     if (!secret) {
+       throw new Error('JWT_SECRET environment variable must be set.');
+     }
+     return secret;
+   };
 
 /**
  * Authenticates requests using either server-side session cookies or Bearer JWT token.
