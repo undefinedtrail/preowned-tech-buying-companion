@@ -281,11 +281,11 @@ const findListingsTool = new DynamicStructuredTool({
       modelName: item.modelName,
       condition: item.condition,
       structuredSpecs: item.structuredSpecs,
-      seller: {
-        name: item.sellerId?.name || 'Verified Seller',
-        reputationScore: item.sellerId?.reputationScore || 98,
-        verifiedSalesCount: item.sellerId?.verifiedSalesCount || 0,
-      },
+     seller: {
+  name: item.sellerId?.name || 'Unknown seller',
+  reputationScore: item.sellerId?.reputationScore ?? null,
+  verifiedSalesCount: item.sellerId?.verifiedSalesCount ?? 0,
+},
       similarityScore: item.similarityScore,
     }));
 
