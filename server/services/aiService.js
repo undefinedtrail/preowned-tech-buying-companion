@@ -412,7 +412,6 @@ const inspectDisclosuresTool = new DynamicStructuredTool({
 
     for (let idx = 0; idx < sortedListings.length; idx++) {
       const item = sortedListings[idx];
-      const isCheapest = idx === 0;
 
       const evidence = await PrivateEvidence.findOne({ listingId: item._id });
 
@@ -452,12 +451,6 @@ const inspectDisclosuresTool = new DynamicStructuredTool({
         });
       }
 
-      let scenarioNote = '';
-      if (isCheapest && missingGaps.length > 0) {
-        scenarioNote = 'CHEAPEST LISTING GAP DETECTED: This is the lowest-priced option, but it lacks critical battery disclosure. Potential hidden battery replacement cost ($80-$150).';
-      } else if (!isCheapest && item.conditionDisclosures?.batteryHealthPct) {
-        scenarioNote = `VERIFIED CONTRAST: Priced at $${item.price}, but provides full disclosure (${item.conditionDisclosures.batteryHealthPct}% battery health, ${item.conditionDisclosures.batteryCycleCount} cycles) and verified proof.`;
-      }
 
       inspections.push({
         listingId: item._id.toString(),
@@ -467,8 +460,9 @@ const inspectDisclosuresTool = new DynamicStructuredTool({
         disclosedDefects: identifiedDefects,
         missingGaps,
         evidenceAudit,
-        scenarioNote,
         hasBatteryDisclosure: Boolean(item.conditionDisclosures?.batteryHealthPct),
+        batteryHealthPct: item.conditionDisclosures?.batteryHealthPct ?? null,
+        batteryCycleCount: item.conditionDisclosures?.batteryCycleCount ?? null,
         sellerSummary: item.conditionDisclosures?.sellerConditionSummary || 'None provided',
       });
     }
