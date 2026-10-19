@@ -252,8 +252,7 @@ async function ensureSpecificationChunksIndexed(specification) {
  * Discovers active listings matching user needs within deterministic hard budget limit.
  */
 const findListingsSchema = z.object({
-  needs: z.string().min(2, 'Search terms or requirements must be at least 2 characters').describe('Search terms or buyer use-case (e.g. coding laptop, 4K camera)'),
-  budget: z.number().positive('Budget must be greater than 0').optional().nullable().OLLAMA_MODEL=llama3
+  budget: z.number().positive('Budget must be greater than 0').optional().nullable().describe('Set automatically by the application. You do not need to provide it.'),
 
   category: z.enum(['laptops', 'cameras', 'smartphones', 'gaming', 'tablets', 'audio', 'smartwatches']).optional().describe('Product category'),
   minRamGb: z.number().positive().optional().describe('Minimum required RAM in GB'),
