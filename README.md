@@ -53,11 +53,12 @@ The project combines a secure marketplace backend with AI-powered product compar
 
 ### Seller Features
 
-- Create and manage listings
-- Provide device condition and disclosure information
+- Create preowned technology listings through POST /api/listings
+- Update existing listings through PATCH /api/listings/:id
+- Submit structured device specifications, including RAM, storage, processor, and other category-specific details 
+- Record device defects and condition disclosures, including battery health, screen and body condition, and repair history
 - Submit private evidence related to listings
-- Respond to buyer questions
-- Manage listings through the approval workflow
+- Manage listings through the approval workflow, with edits to active listings requiring moderation review
 
 ### AI-Powered Assistance
 
