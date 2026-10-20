@@ -12,7 +12,7 @@ The project combines a secure marketplace backend with AI-powered product compar
 
 - Node.js
 - Express.js
-- MongoDB / MongoDB Atlas
+- MongoDB Compass/ MongoDB Atlas
 - Mongoose
 - MongoDB Atlas Vector Search
 - LangChain JS
