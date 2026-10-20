@@ -2,6 +2,7 @@
   "name": "preowned-tech-buying-companion",
   "version": "1.0.0",
   "description": "Preowned Tech Buying Companion - Project 07 Capstone",
+  "private": true,
   "scripts": {
     "seed": "node server/seed.js",
     "server": "node server/index.js",
@@ -12,5 +13,7 @@
   "keywords": ["preowned", "marketplace", "rag", "langchain", "mongodb", "express"],
   "author": "",
   "license": "ISC",
-  "devDependencies": {"isomorphic-git": "^1.44.3"}
+  "devDependencies": {
+    "isomorphic-git": "^1.44.3"
+  }
 }
