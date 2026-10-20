@@ -157,13 +157,6 @@ The current scope includes:
 - Semantic document retrieval
 - Privacy-aware evidence handling
 
-The following are outside the current project scope:
-
-- Payments
-- Escrow
-- Autonomous seller communication
-- Automatic booking of viewings
-
 ## Project
 
 **Preowned Tech Buying Companion — Capstone Project**
