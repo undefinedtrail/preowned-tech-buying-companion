@@ -19,7 +19,7 @@ The project combines a secure marketplace backend with AI-powered product compar
 - Ollama
 - Zod
 
-## Main Features
+#### Main Features
 
 ### Authentication and Security
 
