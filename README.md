@@ -97,6 +97,9 @@ The application is organized into separate backend components:
 - **Middleware** — authentication, authorization, CSRF, rate limiting, and error handling
 - **Services** — AI, vector search, email, and other supporting services
 - **Configuration** — database and application configuration
+- **Utilities** — token generation and hashing, validation schemas, and response serializers
+- **Tests** — automated tests for authentication, authorization, CSRF, and rate limiting
+- **Postman** — API collection and environment for manual testing
 
 ## Core Data
 
