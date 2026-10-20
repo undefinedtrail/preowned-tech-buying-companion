@@ -59,7 +59,7 @@ The project combines a secure marketplace backend with AI-powered product compar
 - Respond to buyer questions
 - Manage listings through the approval workflow
 
-## AI-Powered Assistance
+### AI-Powered Assistance
 
 The system features an intelligent AI shopping assistant designed to help buyers find suitable technology:
 
